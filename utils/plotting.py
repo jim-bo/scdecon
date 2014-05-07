@@ -1,11 +1,17 @@
 """ plotting """
 ## imports ##
+import warnings
+import os
+warnings.filterwarnings("ignore")
+
 import numpy as np
 #import brewer2mpl
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.pylab as plb
 import matplotlib.gridspec as gridspec
 import matplotlib.cm as cm
+import matplotlib.colors as colors
 import scipy.spatial.distance as distance
 import scipy.cluster.hierarchy as sch
 
@@ -14,8 +20,174 @@ from scipy.stats import gaussian_kde
 from numpy.random import normal
 from numpy import arange
 
+# scikit
+from sklearn.decomposition import PCA
+
+# application.
+from utils.matops import *
+from utils.misc import *
+from simulation import _sim_gen
 
 ## high-level functions ##
+def pca_X_Z(X, Z, y, figure_path):
+    """ plots the experiment """
+
+    # create color map.
+    unique_vals = sorted(list(np.unique(y)))
+    num_colors = len(unique_vals)
+    cmap = plt.get_cmap('gist_rainbow')
+    cnorm  = colors.Normalize(vmin=0, vmax=num_colors-1)
+    scalarMap = cm.ScalarMappable(norm=cnorm, cmap=cmap)
+
+    # do PCA
+    pcaX = PCA(n_components=2)
+    pcaZ = PCA(n_components=2)
+    Xt = np.transpose(X)
+    Zt = np.transpose(Z)
+    Xp = pcaX.fit(Xt).transform(Xt)
+    Zp = pcaZ.fit(Zt).transform(Zt)
+
+    # plot pure.
+    for i in unique_vals:
+
+        # get color.
+        color = cmap(1.*i/num_colors)
+        label = str(i)
+
+        # plot it.
+        plt.scatter(Zp[y == i, 0], Zp[y == i, 1], c=color, label=label)
+
+    # plot mixed.
+    plt.scatter(Xp[:, 0], Zp[:, 1], c="black", label="mix")
+
+    # add legend.
+    plt.legend()
+    plt.savefig(figure_path)
+
+def pca_Z(args):
+    """ plots the experiment """
+
+    # simplify.
+    Z = np.load(args.SC)
+    y = np.load(args.sc_lbls)
+    labels = np.load(args.c_lbls)
+    figure_path = args.fig_file
+
+    # create color map.
+    unique_vals = sorted(list(np.unique(y)))
+    num_colors = len(unique_vals)
+    cmap = plt.get_cmap('gist_rainbow')
+    cnorm  = colors.Normalize(vmin=0, vmax=num_colors-1)
+    scalarMap = cm.ScalarMappable(norm=cnorm, cmap=cmap)
+
+    # do PCA
+    pcaZ = PCA(n_components=2)
+    Zt = np.transpose(Z)
+    Zp = pcaZ.fit(Zt).transform(Zt)
+
+    # plot pure.
+    for i in unique_vals:
+
+        # get color.
+        color = cmap(1.*i/num_colors)
+        label = labels[i]
+
+        # plot it.
+        plt.scatter(Zp[y == i, 0], Zp[y == i, 1], c=color, label=label)
+
+    # add legend.
+    plt.legend()
+    plt.savefig(figure_path)
+
+
+def plot_scatter(args):
+    """ plots experiment as scatter plot """
+    
+    # load data.
+    test = load_pickle(args.test_file)
+    ref = load_pickle(args.ref_file)
+
+    # simplify.
+    n = ref['Xs'][0].shape[1]
+    m = ref['Xs'][0].shape[0]
+    q = len(ref['Xs'])
+    method = args.method
+
+    # create list by cell-type.
+    bycell = dict()
+
+    # loop over each experiment.
+    for X_test, Z_test, y_test, wdir, C_path, S_path, idx in _sim_gen(test['Xs'], test['Zs'], test['ys'], method, args.work_dir):
+
+        # get elements.
+        X_ref = ref['Xs'][idx]
+        Z_ref = ref['Zs'][idx]
+        C_ref = ref['Cs'][idx]
+        y_ref = ref['ys'][idx]
+        
+        # load the test matrix.
+        if os.path.isfile(C_path):
+            C_test = np.load(C_path)
+        else:
+            # silenty skip missing.
+            continue
+
+        # round to 5 decimals.
+        C_ref = np.round(C_ref, decimals=5)
+        C_test = np.round(C_test, decimals=5)
+
+        # add by cell type.
+        for j in range(C_ref.shape[1]):
+            for l in range(C_ref.shape[0]):
+                if l not in bycell:
+                    bycell[l] = [list(), list()]
+                
+                bycell[l][0].append(C_ref[l,j])
+                bycell[l][1].append(C_test[l,j])
+
+    # create color map.
+    unique_vals = sorted(bycell.keys())
+    num_colors = len(unique_vals)
+    cmap = plt.get_cmap('gist_rainbow')
+    cnorm  = colors.Normalize(vmin=0, vmax=num_colors-1)
+    scalarMap = cm.ScalarMappable(norm=cnorm, cmap=cmap)                
+        
+    # print them
+    for l in bycell:
+
+        # get data.
+        x = np.array(bycell[l][0])
+        y = np.array(bycell[l][1])
+        
+        # plot the regression.
+        fit = plb.polyfit(x, y, 1)
+        fit_fn = plb.poly1d(fit)
+        
+        # compute r^2
+        yhat = fit_fn(x)
+        ybar = np.sum(y)/len(y)
+        ssreg = np.sum((yhat-ybar)**2)
+        sstot = np.sum((y-ybar)**2)
+        r2 = ssreg / sstot
+        
+        # compute the color.
+        color = cmap(1.*l/num_colors)
+        
+        # plot the points.
+        plt.plot(x, y, '.', color=color, label='%i, r^2=%.2f' % (l,r2))
+        
+        # plot the regression.
+        plt.plot(x, fit_fn(x), '--', color=color)
+        
+        # plot middle line.
+        plt.plot(np.arange(0,1.1,.1), np.arange(0,1.1,.1), '-', color='black')
+
+    # add legend.
+    plt.legend()
+    plt.savefig(args.fig_file)
+                
+        
+
 def gene_histo(xlist, figure_path, title):
     """ plots histogram for gene """
 
@@ -108,6 +280,420 @@ def heirheatmap(M, row_labels, path):
     # save figure.
     plt.savefig(path)
 
+
+def plot_sim(args):
+    """ plot the simulation """
+
+    # load testing data.
+    data = load_pickle(args.test_file)
+    Xs = data['Xs']
+    Zs = data['Zs']
+    ys = data['ys']
+    k = args.k
+
+
+    # create master array for each.
+    Xfull = np.zeros((Xs[0].shape[0], Xs[0].shape[1]*len(Xs)), dtype=np.float)
+    Zfull = np.zeros((Zs[0].shape[0], Zs[0].shape[1]*len(Zs)), dtype=np.float)
+    yfull = np.zeros(ys[0].shape[0]*len(ys), dtype=np.int)
+
+    # loop over each experiment.
+    xj = 0
+    zj = 0
+    yi = 0
+    for  X, Z, y, wdir, C_path, S_path, idx in _sim_gen(Xs, Zs, ys, "bla"):
+
+        # copy into.
+        for j in range(X.shape[1]):
+            Xfull[:,xj] = X[:,j]
+            xj += 1
+        for j in range(Z.shape[1]):
+            Zfull[:,zj] = Z[:,j]
+            zj += 1
+        for i in range(y.shape[0]):
+            yfull[yi] = y[i]
+            yi += 1
+
+    # call the plot command.
+    pca_X_Z(Xfull, Zfull, yfull, args.fig_file)
+
+
+def plot_singlecell(args):
+    """ plot the simulation """
+
+    # simplify parameters.
+    base_dir = os.path.abspath(args.base_dir)
+    tlist = [int(x) for x in args.tlist.split(",")]
+    mlist = [x for x in args.mlist.split(",")]
+    c = args.c
+    e = args.e
+    g = args.g
+
+    # print mlist.
+    print ',' + ','.join(mlist)
+
+    # loop over each singlecell.
+    for t in tlist:
+
+        # set the reference files.
+        dat_dir = "%s/data/%i_%i_%i_%i_%i_%i" % (base_dir, t*5, args.q, t, c, e, g)
+        ref_file= "%s/ref_%i_%i_%i_%i_%i_%i.cpickle" % (dat_dir, t*5, args.q, t, c, e, g)
+        test_file= "%s/test_%i_%i_%i_%i_%i_%i.cpickle" % (dat_dir, t*5, args.q, t, c, e, g)
+
+        # load them.
+        test = load_pickle(test_file)
+        ref = load_pickle(ref_file)
+
+        # set the work dir.
+        work_dir = "%s/work/%i_%i_%i_%i_%i_%i" % (base_dir, t*5, args.q, t, c, e, g)
+
+        # loop over each test case.
+        lookup = dict()
+        for m in mlist:
+
+            # bootstrap.
+            if m not in lookup:
+                lookup[m] = list()
+
+            # loop over instances.
+            for  X_test, Z_test, y_test, wdir, C_path, S_path, idx in _sim_gen(test['Xs'], test['Zs'], test['ys'], m, work_dir):
+
+                # simplify.
+                X_ref = ref['Xs'][idx]
+                Z_ref = ref['Zs'][idx]
+                C_ref = ref['Cs'][idx]
+                y_ref = ref['ys'][idx]
+
+                # load the test matrix.
+                if os.path.isfile(C_path):
+                    C_test = np.load(C_path)
+                else:
+                    # silenty skip missing.
+                    continue
+
+                # round to 5 decimals.
+                C_ref = np.round(C_ref, decimals=5)
+                C_test = np.round(C_test, decimals=5)
+
+                # set the scoring function.
+                metric = rmse_vector
+
+                # compute column wise average.
+                vals = list()
+                for j in range(C_ref.shape[1]):
+                    v = metric(C_ref[:,j], C_test[:,j])
+                    vals.append(v)
+                total = np.average(np.array(vals))
+
+                # put into lookup.
+                lookup[m].append(total)
+
+
+        # print this row.
+        while lookup != {}:
+            byrow = list()
+            for m in mlist:
+
+                # add if present.
+                if m in lookup:
+
+                    # add to this row.
+                    if len(lookup[m]) > 0:
+                        byrow.append('%.3f' % lookup[m].pop())
+
+                    # clear if empty.
+                    if len(lookup[m]) == 0:
+                        del lookup[m]
+
+                # add empty.
+                else:
+                    byrow.append("")
+
+            # print the row as a function of # single-cells.
+            print '%i,' % t + ','.join(byrow)
+
+
+
+def plot_varygene(args):
+    """ plot the simulation """
+
+    # simplify parameters.
+    base_dir = os.path.abspath(args.base_dir)
+    glist = [int(x) for x in args.glist.split(",")]
+    mlist = [x for x in args.mlist.split(",")]
+    c = args.c
+    e = args.e
+    t = args.t
+
+    # print mlist.
+    print ',' + ','.join(mlist)
+
+    # loop over each singlecell.
+    for g in glist:
+
+        # set the reference files.
+        dat_dir = "%s/data/%i_%i_%i_%i_%i_%i" % (base_dir, t*5, args.q, t, c, e, g)
+        ref_file= "%s/ref_%i_%i_%i_%i_%i_%i.cpickle" % (dat_dir, t*5, args.q, t, c, e, g)
+        test_file= "%s/test_%i_%i_%i_%i_%i_%i.cpickle" % (dat_dir, t*5, args.q, t, c, e, g)
+
+        # load them.
+        test = load_pickle(test_file)
+        ref = load_pickle(ref_file)
+
+        # set the work dir.
+        work_dir = "%s/work/%i_%i_%i_%i_%i_%i" % (base_dir, t*5, args.q, t, c, e, g)
+
+        # loop over each test case.
+        lookup = dict()
+        for m in mlist:
+
+            # bootstrap.
+            if m not in lookup:
+                lookup[m] = list()
+
+            # loop over instances.
+            for  X_test, Z_test, y_test, wdir, C_path, S_path, idx in _sim_gen(test['Xs'], test['Zs'], test['ys'], m, work_dir):
+
+                # simplify.
+                X_ref = ref['Xs'][idx]
+                Z_ref = ref['Zs'][idx]
+                C_ref = ref['Cs'][idx]
+                y_ref = ref['ys'][idx]
+
+                # load the test matrix.
+                if os.path.isfile(C_path):
+                    C_test = np.load(C_path)
+                else:
+                    # silenty skip missing.
+                    continue
+
+                # round to 5 decimals.
+                C_ref = np.round(C_ref, decimals=5)
+                C_test = np.round(C_test, decimals=5)
+
+                # set the scoring function.
+                metric = rmse_vector
+
+                # compute column wise average.
+                vals = list()
+                for j in range(C_ref.shape[1]):
+                    v = metric(C_ref[:,j], C_test[:,j])
+                    vals.append(v)
+                total = np.average(np.array(vals))
+
+                # put into lookup.
+                lookup[m].append(total)
+
+
+        # print this row.
+        while lookup != {}:
+            byrow = list()
+            for m in mlist:
+
+                # add if present.
+                if m in lookup:
+
+                    # add to this row.
+                    if len(lookup[m]) > 0:
+                        byrow.append('%.4f' % lookup[m].pop())
+
+                    # clear if empty.
+                    if len(lookup[m]) == 0:
+                        del lookup[m]
+
+                # add empty.
+                else:
+                    byrow.append("")
+
+            # print the row as a function of # single-cells.
+            print '%i,' % g + ','.join(byrow)
+
+def plot_truepred(args):
+    """ plot the simulation """
+
+    # simplify parameters.
+    base_dir = os.path.abspath(args.base_dir)
+    tlist = [int(x) for x in args.tlist.split(",")]
+    mlist = [x for x in args.mlist.split(",")]
+    c = args.c
+    e = args.e
+    g = args.g
+
+    # print mlist.
+    print ',' + ','.join(mlist)
+
+    # loop over each singlecell.
+    for t in tlist:
+
+        # set the reference files.
+        dat_dir = "%s/data/%i_%i_%i_%i_%i_%i" % (base_dir, t*5, args.q, t, c, e, g)
+        ref_file= "%s/ref_%i_%i_%i_%i_%i_%i.cpickle" % (dat_dir, t*5, args.q, t, c, e, g)
+        test_file= "%s/test_%i_%i_%i_%i_%i_%i.cpickle" % (dat_dir, t*5, args.q, t, c, e, g)
+
+        # load them.
+        test = load_pickle(test_file)
+        ref = load_pickle(ref_file)
+
+        # set the work dir.
+        work_dir = "%s/work/%i_%i_%i_%i_%i_%i" % (base_dir, t*5, args.q, t, c, e, g)
+
+        # loop over each test case.
+        lookup = dict()
+        for m in mlist:
+
+            # bootstrap.
+            if m not in lookup:
+                lookup[m] = list()
+
+            # loop over instances.
+            for  X_test, Z_test, y_test, wdir, C_path, S_path, idx in _sim_gen(test['Xs'], test['Zs'], test['ys'], m, work_dir):
+
+                # simplify.
+                X_ref = ref['Xs'][idx]
+                Z_ref = ref['Zs'][idx]
+                C_ref = ref['Cs'][idx]
+                y_ref = ref['ys'][idx]
+
+                # load the test matrix.
+                if os.path.isfile(C_path):
+                    C_test = np.load(C_path)
+                else:
+                    # silenty skip missing.
+                    continue
+
+                # round to 5 decimals.
+                C_ref = np.round(C_ref, decimals=5)
+                C_test = np.round(C_test, decimals=5)
+
+                # set the scoring function.
+                metric = rmse_vector
+
+                # compute column wise average.
+                vals = list()
+                for j in range(C_ref.shape[1]):
+                    v = metric(C_ref[:,j], C_test[:,j])
+                    vals.append(v)
+                total = np.average(np.array(vals))
+
+                # put into lookup.
+                lookup[m].append(total)
+
+
+def plot_genes(args):
+    """ plots expression values """
+
+    # load the data.
+    SC = np.load(args.SC)
+    sc_lbls = np.load(args.sc_lbls)
+    b_lbls = np.load(args.b_lbls)
+    c_lbls = np.load(args.c_lbls)
+
+    # get teh informative features.
+    clf = feature_selection.SelectKBest(score_func=feature_selection.f_classif, k=20)
+    clf.fit(np.transpose(SC), sc_lbls)
+    features = np.where(clf.get_support() == True)[0]
+
+    # simulate single-cells.
+    sim = SimSingleCell(SC, sc_lbls)
+    TMP, we = sim.sample_1(1000)
+
+    # loop over genes:
+    for i in features:
+
+        # set gene name.
+        gene_name = b_lbls[i]
+
+        # loop over each class.
+        xlist = list()
+        for c in range(len(c_lbls)):
+
+            # extract subset of SC.
+            SC_s = SC[:,np.where(sc_lbls == c)[0]]
+            TMP_s = TMP[:,np.where(we == c)[0]]
+
+            # extract subset of gene.
+            SC_s = SC_s[np.where(b_lbls == gene_name)[0],:]
+            TMP_s = TMP_s[np.where(b_lbls == gene_name)[0],:]
+
+            # make sure is 1d (some duplicate genes measured)
+            SC_s = np.ravel(SC_s)
+            TMP_s = np.ravel(TMP_s)
+
+            # store list.
+            xlist.append((SC_s, "%s:%s" % (str(c_lbls[c]), "t")))
+            xlist.append((TMP_s, "%s:%s" % (str(c_lbls[c]), "s")))
+
+        # plot it.
+        fname = '%s/%s.pdf' % (args.fig_dir, gene_name)
+        gene_histo(xlist, fname, gene_name)
+
+def heatmap(args):
+    """ heatmap and clustering """
+
+    # load the data.
+    SC = np.load(args.SC)
+    sc_lbls = np.load(args.sc_lbls)
+    b_lbls = np.load(args.b_lbls)
+    c_lbls = np.load(args.c_lbls)
+
+    # get teh informative features.
+    clf = feature_selection.SelectKBest(score_func=feature_selection.f_classif, k=20)
+    clf.fit(np.transpose(SC), sc_lbls)
+    features = np.where(clf.get_support() == True)[0]
+
+    # extract subset.
+    SC = SC[features,:]
+
+    # create master S.
+    #S = _avg_S(sc_lbls, SC)
+
+    # make the heatmap.
+    print c_lbls
+    sys.exit()
+    heirheatmap(SC, sc_lbls, args.fig_path)
+    #graph = TestHeatmap()
+    #graph.plot(args.fig_path, SC, b_lbls, [str(x) for x in sc_lbls])
+
+def plot_gene(args):
+    """ plots expression values """
+
+    # load the data.
+    SC = np.load(args.SC)
+    sc_lbls = np.load(args.sc_lbls)
+    b_lbls = np.load(args.b_lbls)
+    c_lbls = np.load(args.c_lbls)
+
+    # simulate single-cells.
+    sim = SimSingleCell(SC, sc_lbls, load=False)
+    TMP, we = sim.sample_1(1000)
+
+    # set gene name.
+    gene_name = args.gene_name
+
+    # loop over each class.
+    xlist = list()
+    for c in range(len(c_lbls)):
+
+        # extract subset of SC.
+        SC_s = SC[:,np.where(sc_lbls == c)[0]]
+        TMP_s = TMP[:,np.where(we == c)[0]]
+
+        # extract subset of gene.
+        SC_s = SC_s[np.where(b_lbls == gene_name)[0],:]
+        TMP_s = TMP_s[np.where(b_lbls == gene_name)[0],:]
+
+        # make sure is 1d (some duplicate genes measured)
+        SC_s = np.ravel(SC_s)
+        TMP_s = np.ravel(TMP_s)
+
+        # store list.
+        xlist.append((SC_s, "%s:%s" % (str(c_lbls[c]), "t")))
+        xlist.append((TMP_s, "%s:%s" % (str(c_lbls[c]), "s")))
+
+    # plot it.
+    fname = '%s/%s.pdf' % (args.fig_dir, gene_name)
+    gene_histo(xlist, fname, gene_name)
+
 ## low-level functions ##
 
 # helper for cleaning up axes by removing ticks, tick labels, frame, etc.
@@ -138,3 +724,4 @@ def _violin_plot(ax, data, pos, bp=False):
             continue
     if bp:
         ax.boxplot(data,notch=1,positions=pos,vert=1)
+

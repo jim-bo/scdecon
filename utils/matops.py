@@ -6,6 +6,7 @@ import numpy as np
 import scipy.stats as stats
 from sklearn.metrics import mean_squared_error
 from math import sqrt
+import statsmodels.tools.eval_measures
 
 def norm_matrix(m):
     ''' normalizes whole matrix '''
@@ -45,6 +46,9 @@ def norm_rows(m):
 
 def pearson_vector(x, y):
     ''' pearson for vector '''
+    
+    # return 1 if dey equal.
+    if np.sum(x == y) == len(x): return 1.0    
     return stats.pearsonr(x,y)[0]
 
 def pearson_matrix(x, y):
@@ -58,53 +62,45 @@ def pearson_matrix(x, y):
 def rmse_vector(x, y):
     """ root mean square error """
 
-    return np.sqrt(np.mean(np.square(np.subtract(x, y))))
+    return statsmodels.tools.eval_measures.rmse(x, y)
+
+def rmse_matrix(x, y):
+    """ root mean square error """
+    vals = list()
+    for j in range(x.shape[1]):
+        vals.append(rmse_vector(x[:,j], y[:,j]))
+    return np.average(np.array(vals))
 
 def nrmse_vector(x, y):
     """ normalized root mean square error """
 
     return rmse_vector(x,y) / (y.max() - y.min())
+    
+def nrmse_matrix(x, y):
+    """ normalized root mean square error """
+    vals = list()
+    for j in range(x.shape[1]):
+        vals.append(nrmse_vector(x[:,j], y[:,j]))
+    return np.average(np.array(vals))
 
-def relerr_vector(x, y):
-    """ relative error """
+def meanabs_vector(x, y):
+    return statsmodels.tools.eval_measures.meanabs(x, y)
 
-    # compute error.
-    z = np.absolute(x - y)
+def meanabs_matrix(x, y):
+    vals = list()
+    for j in range(x.shape[1]):
+        vals.append(meanabs_vector(x[:,j], y[:,j]))
+    return np.average(np.array(vals))
+    
+def maxabs_vector(x, y):
+    return statsmodels.tools.eval_measures.maxabs(x, y)
 
-    for i in range(len(x)):
-        if z[i] > 1.0:
-            print x[i], y[i], z[i]
-            sys.exit()
+def maxabs_matrix(x, y):
+    vals = list()
+    for j in range(x.shape[1]):
+        vals.append(maxabs_vector(x[:,j], y[:,j]))
+    return np.average(np.array(vals))    
 
-    s = z / y
-
-    for i in range(len(x)):
-        if s[i] > 1.0:
-            print x[i], y[i], z[i], s[i]
-            sys.exit()
-
-    # divide by truth
-    return np.average()
-
-def mape_vector(a, f):
-    """ relative error """
-
-    # compute average true.
-    av = np.average(a)
-
-    # compute error.
-    return np.sum(np.absolute(a - f) / av) / a.shape[0]
-
-def rmse_cols(x, y):
-    """ root mean square error """
-
-    # LOOP over columns.
-    rmss = list()
-    for a in range(x.shape[1]):
-        rms = sqrt(mean_squared_error(x[:,a], y[:,a]))
-        rmss.append(rms)
-
-    return np.average(np.array(rmss))
 
 def avg_cat(targets, expr):
     ''' computes S based on average category '''

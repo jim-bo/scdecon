@@ -11,7 +11,7 @@ import scipy.spatial
 
 # app
 from utils.matops import *
-from utils.rfuncs import *
+#from utils.rfuncs import *
 from utils.misc import *
 
 ## method ##
