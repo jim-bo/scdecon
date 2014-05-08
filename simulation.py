@@ -38,6 +38,7 @@ from utils.plotting import *
 from utils.cluster import *
 
 from scdecon import decon_missing
+from scdecon import _solve_missing
 
 # hack to silence argparser.
 warnings.filterwarnings('ignore', category=DeprecationWarning)
@@ -470,6 +471,44 @@ def _UCQP(X, Z, y, k, C_path, S_path, wdir, xtra=None):
 
     # run it.
     _run_it_uconn(wdir, '\n'.join(cmd), X.shape[1], X.shape[0], k)
+    
+
+
+def _UCQPM(X, Z, y, k, C_path, S_path, wdir, xtra=None):
+
+    # save them to temporary file.
+    subprocess.call(['mkdir', '-p', wdir])
+
+    Xout = '%s/X.npy' % (wdir)
+    Zout = '%s/Z.npy' % (wdir)
+    yout = '%s/y.npy' % (wdir)
+    np.save(Xout, X)
+    np.save(Zout, Z)
+    np.save(yout, y)
+
+    # call out method.
+    cmd = list()
+    cmd.append('#!/bin/bash')
+    cmd.append('# UCQP')
+    cmd.append('')
+    cmd.append('# run it.')
+    tmp = list()
+    tmp.append('python')
+    tmp.append('/home/jrl03001/code/scdecon2/scdecon.py')
+    tmp.append('decon_missing')
+    tmp.append('-X %s' % Xout)
+    tmp.append('-Z %s' % Zout)
+    tmp.append('-y %s' % yout)
+    tmp.append('-C %s' % C_path)
+    tmp.append('-S %s' % S_path)
+    tmp.append('-p 5')
+    cmd.append(' '.join(tmp))
+    cmd.append('')
+    cmd.append('')
+
+    # run it.
+    _run_it_uconn(wdir, '\n'.join(cmd), X.shape[1], X.shape[0], k)
+
 
 
 def _UCQPS(X, Z, y, k, C_path, wdir, xtra=None):
@@ -1459,6 +1498,14 @@ def create_exp4(args):
             N = _log_noise(X.shape[0], X.shape[1], e)
             X = X * N
 
+        # anova feature selection.
+        clf = feature_selection.SelectKBest(score_func=feature_selection.f_classif, k=g)
+        clf.fit(np.transpose(Z), y)
+        features = np.where(clf.get_support() == True)[0]
+
+        # chop the genes down.
+        Z = Z[features,:]
+        X = X[features,:]
 
         # remove cell type.
         yidx = np.where(y != r)[0]
@@ -1468,6 +1515,21 @@ def create_exp4(args):
         # renumber stuff.
         for ll in range(r+1, k):
             ytmp[np.where(ytmp == ll)[0]] -= 1
+
+        ## debug stuff ##
+        if args.debug == True:
+            
+            # simplify
+            s = S[features,r]
+            
+            # compute Stmp
+            Stmp = _avg_S(ytmp, Ztmp)
+            
+            # call it.
+            _solve_missing(X, Stmp, np.arange(Z.shape[0]), minrel_vector, cheat_s=s, cheat_C=C)
+            
+            print "lol"
+            sys.exit()
 
         # save to list.
         Xs.append(X)
@@ -1479,147 +1541,16 @@ def create_exp4(args):
         yts.append(y)
         mj.append(r)
 
+    # dont save.
+    if args.debug == True:
+        return
+        
+    print "blarg"
+    sys.exit()
 
     # save experiment.
     save_pickle(args.ref_file, {'Xs':Xs, 'Ss':Ss, 'Cs':Cs, 'Zs':Zs, 'ys':ys, 'ZTs':ZTs, 'yts':yts, 'mj':mj})
     save_pickle(args.test_file, {'Xs':Xs, 'Zs':Zs, 'ys':ys})
-
-def debug_exp4(args):
-    """ simulate a single missing cell type """
-
-    # load data.
-    SC = np.load(args.SC)
-    sc_lbls = np.load(args.sc_lbls)
-    #c_lbls = np.load(args.c_lbls)
-    #b_lbls = np.load(args.b_lbls)
-
-    # compute dimensions.
-    n = 10
-    m = SC.shape[0]
-    k = np.unique(sc_lbls).shape[0]
-    l = SC.shape[1]
-    t = 200
-    q = 10
-    g = 285
-    w = 200
-    e = 0.00
-    c_type = 1
-    
-    # build the S simulation object.
-    if os.path.isfile(args.sim_obj) == False:
-        sim = SimSingleCell(SC, sc_lbls)
-        sim.save(args.sim_obj)
-    else:
-        sim = SimSingleCell(SC, sc_lbls, load=args.sim_obj)
-
-    # create master S.
-    S = _avg_S(sc_lbls, SC)
-
-    # simulate the single-cells.
-    Xtmp, xy = sim.sample_1(1000)
-
-    # make index lookup.
-    ilu = dict()
-    for a in range(k):
-        ilu[a] = np.where(xy == a)[0]
-
-    # loop over each experiment.
-    for gg in range(q):
-
-        # simulate the single-cells.
-        Z, y = sim.sample_1(t)
-
-        # create S-timate
-        H = _avg_S(y, Z)
-
-        # simulate the concentrations.
-        C = np.zeros((k, n), dtype=np.float)
-        for j in range(n):
-            if c_type == 1:
-
-                # uniform.
-                C[:,j] = 1.0 / float(k)
-
-            elif c_type == 2:
-
-                # arithmetic.
-                x = [float(x) for x in range(1,k+1)]
-                random.shuffle(x)
-                x = np.array(x)
-                x = x / np.sum(x)
-                C[:,j] = x
-
-            elif c_type == 3:
-
-                # geometric.
-                x = list(np.vander([k], k)[0])
-                random.shuffle(x)
-                x = [float(z) for z in x]
-                x = np.array(x)
-                x = x / np.sum(x)
-                C[:,j] = x
-
-            else:
-                logging.error("unknown C type")
-                sys.exit(1)
-
-        # sample from mixture to create X.
-        X = np.zeros((m, n), dtype=np.float)
-
-        # for each sample.
-        for j in range(n):
-
-            # choose 100 from each cell type.
-            idxs = list()
-            for a in range(k):
-
-                # compute count.
-                count = int(np.rint(w * C[a,j]) + 1)
-
-                # choose index.
-                idxs += list(np.random.choice(ilu[a], size = count))
-
-            # build big slice.
-            bs = Xtmp[:,idxs]
-
-            # assign average to sample.
-            for i in range(m):
-                X[i,j] = np.average(bs[i,:])
-
-        # add noise.
-        if e != None:
-            N = _log_noise(X.shape[0], X.shape[1], e)
-            X = X * N
-
-        # loop over each gene.
-        for r in [0, 1, 2, 3]:
-            yidx = np.where(y != r)[0]
-            ytmp = y[yidx]
-            Ztmp = Z[:, yidx]
-
-            # renumber stuff.
-            for ll in range(r+1, k):
-                ytmp[np.where(ytmp == ll)[0]] -= 1
-
-            ### start debugging here ###
-            print "START DEBUGGING HERE"
-            
-            # compute Sbase.
-            Sbase = _avg_S(ytmp, Ztmp)
-            
-            # select marker subset.
-            clf = feature_selection.SelectKBest(score_func=feature_selection.f_classif, k=20)
-            clf.fit(np.transpose(Ztmp), ytmp)
-            features = np.where(clf.get_support() == True)[0]
-            
-            # do the deconvolution.
-            for j, cmax, s, c, score in decon_missing(X, Sbase, features):
-                
-                # compute rmse.
-                v = rmse_vector(C[:,j], c)
-                print j, cmax, score, v
-            sys.exit(1)
-
 
 def run_sim(args):
     """ runs the simulation """
@@ -1651,6 +1582,8 @@ def run_sim(args):
         # method switch.
         if method == "UCQP":
             _UCQP(*alist, xtra=args.xtra_args)
+        if method == "UCQPM":
+            _UCQPM(*alist, xtra=args.xtra_args)
         elif method == "QPROG":
             _QPROG(*alist, xtra=args.xtra_args)
         elif method == "DECONF":
@@ -1661,14 +1594,9 @@ def run_sim(args):
             _FROB(*alist, xtra=args.xtra_args)
         elif method == "SSKL":
             _SSKL(*alist, xtra=args.xtra_args)
-        elif method == "PCQP":
-            _PCQP(*alist, xtra=args.xtra_args)
-        elif method == "UCQPS":
-            _UCQPS(*alist, xtra=args.xtra_args)
         else:
             logging.error("unknown method: %s" % method)
             sys.exit(1)
-
 
 
 def evl_sim(args):
@@ -1810,7 +1738,7 @@ if __name__ == '__main__':
     subpp.add_argument('-sd', dest='sim_dir', required=True, help='simulation directory for validation')
     subpp.set_defaults(func=create_exp3)
 
-    subpp = subp.add_parser('create_exp4', help='creates experiment 3 data')
+    subpp = subp.add_parser('create_exp4', help='creates missing data experiment: 4')
     subpp.add_argument('-SC', dest='SC', required=True, help='path for matrix')
     subpp.add_argument('-sc_lbls', dest='sc_lbls', required=True, help='path for matrix')
     subpp.add_argument('-c_lbls', dest='c_lbls', required=True, help='path for matrix')
@@ -1827,16 +1755,12 @@ if __name__ == '__main__':
     subpp.add_argument('-rd', dest='ref_file', required=True, help='serialized experiment file')
     subpp.add_argument('-td', dest='test_file', required=True, help='serialized experiment file')
     subpp.add_argument('-sd', dest='sim_dir', required=True, help='simulation directory for validation')
+    subpp.add_argument('-debug', dest='debug', action='store_true', help='debug mode: for developer')
     subpp.set_defaults(func=create_exp4)
     
-    subpp = subp.add_parser('debug_exp4', help='creates experiment 3 data')
-    subpp.add_argument('-SC', dest='SC', required=True, help='path for matrix')
-    subpp.add_argument('-sc_lbls', dest='sc_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-so', dest='sim_obj', required=True, help='simulation object')
-    subpp.set_defaults(func=debug_exp4)
 
     ## run simulations ##
-    subpp = subp.add_parser('run_sim', help='run simulation')
+    subpp = subp.add_parser('run_sim', help='run simulation 3')
     subpp.add_argument('-td', dest='test_file', required=True, help='the test file')
     subpp.add_argument('-wd', dest='work_dir', required=True, help='working directory for temporary files')
     subpp.add_argument('-k', dest='k', required=True, type=int, help='number of cell types')

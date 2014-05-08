@@ -18,6 +18,8 @@ import h5py
 import numpy as np
 import networkx as nx
 import multiprocessing
+import operator
+import itertools
 
 # scikit
 import sklearn.cluster
@@ -115,141 +117,182 @@ def _avg_S(Z, y):
     return S
 
 
-def _cqp(S, x, k, sum2=1.0):
-    ''' solves using cvxpy '''
-
-    # reshape x to matrix.
-    z = np.zeros((x.shape[0],1))
-    z[:,0] = x
-    x = z
-
-    # cast to object.
-    S = cvxpy.matrix(S)
-    x = cvxpy.matrix(x)
-
-    # create variables.
-    c = cvxpy.variable(k, 1, name='c')
-
-    # create constraints.
-    geqs = cvxpy.greater_equals(c,0.0)
-    sum1 = cvxpy.equals(cvxpy.sum(c), sum2)
-    constrs = [geqs, sum1]
-    #constrs = []
-
-    # create the program.
-    p = cvxpy.program(cvxpy.minimize(cvxpy.norm2(S*c-x)), constraints=constrs)
-    p.options['abstol'] = 1e-10
-    p.options['reltol'] = 1e-9
-    p.options['feastol'] = 1e-5
-    p.options['maxiters'] = 500
-
-    # solve the program.
-    #p.solve(quiet=False)
-    p.solve(quiet=True)
-
-    # return results.
-    return c.value, p.objective.value
-
-
-def _sqp(x, Sm, C, c):
+def _cqp(S, X, sum2=1.0, scorefn=None):
     ''' solves using cvxpy '''
 
     # simplify.
-    m = Sm.shape[0]
-
-    # subtract x from (Sm * c)
-    T = np.dot(Sm, C) - x
-
-    # cast to object.
-    #c = cvxpy.matrix(c)
-    #x = cvxpy.matrix(x)
-    T = cvxpy.matrix(T)
-
-    # create variables.
-    S = cvxpy.variable(T.shape[0], 1, name='s')
-
-    # create constraints.
-    geqs = cvxpy.greater_equals(S,0.0)
-    constrs = [geqs]
-
-    # create the program.
-    p = cvxpy.program(cvxpy.minimize(cvxpy.norm2(T+(c*S))), constraints=constrs)
-    p.options['abstol'] = 1e-10
-    p.options['reltol'] = 1e-9
-    p.options['feastol'] = 1e-5
-    p.options['maxiters'] = 500
-
-    p.options['abstol'] = 1e-10
-    p.options['reltol'] = 1e-9
-    p.options['feastol'] = 1e-5
-    p.options['maxiters'] = 500
-
-    # solve the program.
-    p.solve(quiet=True)
-
-    # return results.
-    return S.value, p.objective.value
-
-def _cqp_c(S, x, k, sum2):
-    ''' solves using cvxpy '''
-
-    # reshape x to matrix.
-    z = np.zeros((x.shape[0],1))
-    z[:,0] = x
-    x = z
+    m = S.shape[0]
+    k = S.shape[1]
 
     # cast to object.
     S = cvxpy.matrix(S)
-    x = cvxpy.matrix(x)
+    X = cvxpy.matrix(X)
 
     # create variables.
-    c = cvxpy.variable(k, 1, name='c')
+    C = cvxpy.variable(k, 1, name='c')
 
     # create constraints.
-    geqs = cvxpy.greater_equals(c,0.0)
-    sum1 = cvxpy.equals(cvxpy.sum(c), sum2)
+    geqs = cvxpy.greater_equals(C,0.0)
+    sum1 = cvxpy.equals(cvxpy.sum(C), sum2)
     constrs = [geqs, sum1]
-    #constrs = []
 
     # create the program.
-    p = cvxpy.program(cvxpy.minimize(cvxpy.norm2(S*c-x)),constraints=constrs)
-    p.options['abstol'] = 1e-10
-    p.options['reltol'] = 1e-9
-    p.options['feastol'] = 1e-5
-    p.options['maxiters'] = 500
+    p = cvxpy.program(cvxpy.minimize(cvxpy.norm2(S*C-X)), constraints=constrs)
+    #p.options['abstol'] = 1e-10
+    #p.options['reltol'] = 1e-9
+    #p.options['feastol'] = 1e-5
+    #p.options['maxiters'] = 500
 
     # solve the program.
-    #p.solve(quiet=False)
     p.solve(quiet=True)
 
+    # compute x2
+    C = C.value        
+    X2 = np.dot(S, C)
+        
+    c = np.array([C[l,0] for l in range(k)])
+    x = np.array([X[i,0] for i in range(m)])
+    x2 = np.array([X2[i,0] for i in range(m)])
+
+    # compute score.
+    if scorefn == None:
+        o = p.objective.value
+    else:
+        o = scorefn(x, x2)
+
     # return results.
-    return c.value, p.objective.value
+    return c, o
+    
+def _shqp(X, Sbase, c, scorefn=None):
+    ''' solves using cvxpy '''
 
-def _solve_C(X, S):
-    """ solves using QP"""
+    # simplify.
+    m = Sbase.shape[0]
+    k = Sbase.shape[1]
 
-    # create C.
-    n = X.shape[1]
-    m = X.shape[0]
-    k = S.shape[1]
-    C = np.zeros((k,n), dtype=np.float)
+    # create shortened C matrix.
+    Cbase = np.zeros((k,1))
+    Cbase[0:k,0] = c[0:k]
+    cm = c[-1]
+    
+    # cast to object.
+    X = cvxpy.matrix(X)
+    Sbase = cvxpy.matrix(Sbase)
+    Cbase = cvxpy.matrix(Cbase)
 
-    # solve each concentration independently.
-    for j in range(n):
+    # create variables.
+    SV = cvxpy.variable(m, 1, name='s')
 
-        # solve column.
-        c, o = _cqp(S, X[:,j], k)
+    # create constraints.
+    geqs = cvxpy.greater_equals(SV,0.0)
+    constrs = [geqs]
+    
+    # set equation.
+    eq = ((Sbase*Cbase) + (SV*cm)) - X
 
-        # save it.
-        for i in range(k):
-            C[i,j] = c[i,0]
+    # create the program.
+    p = cvxpy.program(cvxpy.minimize(cvxpy.norm2(eq)), constraints=constrs)
+    #p.options['abstol'] = 1e-10
+    #p.options['reltol'] = 1e-9
+    #p.options['feastol'] = 1e-5
+    #p.options['maxiters'] = 500
 
-    # return it.
-    return C
+    # solve the program.
+    p.solve(quiet=True)
 
-def _solve_C_parallel(X, S, num_threads):
+    # compute x2
+    C = np.asmatrix(c).transpose()    
+    S = np.zeros((m, k+1))
+    for i, l in zip(range(m), range(k)): 
+        S[i, l] = Sbase[i, l]
+    for i in range(m):
+        S[i,-1] = SV.value[i]
+    
+    X2 = np.dot(S, C)
+    x = np.array([X[i,0] for i in range(m)])
+    x2 = np.array([X2[i,0] for i in range(m)])
+
+    # compute score.
+    if scorefn == None:
+        o = p.objective.value
+    else:
+        o = scorefn(x, x2)
+
+    # simplify.
+    s = np.array([SV.value[i,0] for i in range(m)])
+
+    # return results.
+    return s, o
+
+
+def _sqp(X, Sbase, cm, scorefn=None):
+    ''' solves using cvxpy '''
+
+    # simplify.
+    m = Sbase.shape[0]
+    k = Sbase.shape[1] + 1
+    
+    # create the S variables.
+    SV = cvxpy.variable(m, 1, name='s')
+    
+    # create the concentration variables.
+    CV = cvxpy.variable(k - 1, 1, name='c')
+
+    # case to matrix.
+    X = cvxpy.matrix(X)
+    Sbase = cvxpy.matrix(Sbase)
+
+    # create constraints.
+    sgeqs = cvxpy.greater_equals(SV,0.0)
+    cgeqs = cvxpy.greater_equals(CV,0.0)
+    sum1 = cvxpy.equals(cvxpy.sum(CV), 1.0 - cm)
+    constrs = [sgeqs, cgeqs, sum1]
+
+    # create the equation.
+    eq = ((Sbase*CV)+(SV*cm)) - X
+
+    # create the program.
+    p = cvxpy.program(cvxpy.minimize(cvxpy.norm2(eq)), constraints=constrs)
+    #p.options['abstol'] = 1e-10
+    #p.options['reltol'] = 1e-9
+    #p.options['feastol'] = 1e-5
+    #p.options['maxiters'] = 500
+
+    # solve the program.
+    p.solve(quiet=True)
+
+    # case to vectors.
+    s = np.array([SV.value[i,0] for i in range(m)])
+    c = np.array([CV.value[l,0] for l in range(k-1)] + [cm])
+
+    # compute x2
+    S = np.zeros((m, k))
+    for i, l in zip(range(m), range(k-1)): 
+        S[i, l] = Sbase[i, l]
+    for i in range(m):
+        S[i,-1] = SV.value[i]
+    
+    C = np.zeros((k,1))
+    for l in range(k-1):
+        C[l,0] = CV.value[l,0]
+    C[-1,0] = cm
+        
+    X2 = np.dot(S, C)
+        
+    x = np.array([X[i,0] for i in range(m)])
+    x2 = np.array([X2[i,0] for i in range(m)])
+
+    # compute score.
+    if scorefn == None:
+        o = p.objective.value
+    else:
+        o = scorefn(x, x2)
+
+    # return results.
+    return s, c, o
+
+def _solve_C(X, S, num_threads=1):
     """ solves using QP and multiprocessing """
-
 
     # create C.
     n = X.shape[1]
@@ -299,46 +342,78 @@ def _solve_C_parallel(X, S, num_threads):
     # return the matrix.
     return C
 
+def _solve_missing(X, Sbase, features, scorefn, cheat_s=None, cheat_C=None):
+    """ solves using QP"""
 
-### callable functions ###
+    scorefn = meanrel_vector
+    scorefn = meanabs_vector
 
-def decon(args):
-    """ main function for deconvolution"""
+    # create C.
+    n = X.shape[1]
+    m = X.shape[0]
+    k = Sbase.shape[1] + 1
+    C = np.zeros((k,n), dtype=np.float)
 
-    # load data.
-    X = np.load(args.X)
-    Z = np.load(args.Z)
-    y = np.load(args.y)
+    # shrink it.
+    Sbase = Sbase[features,:]
+    X = X[features,:]
 
-    # sanity.
-    if args.y == None and args.k == None:
-        logging.error("need to specify y or k")
-        sys.exit(1)
+    # create array for new S.
+    Snew = np.zeros((m, n), dtype=np.float)
 
-    # decide which method to build S.
-    if args.y != None:
-        S = _avg_S(Z, y)
-    else:
-        raise NotImplementedError, 'i pity the fool that needs this'
+    # solve each concentration independently.
+    bysample = list()
+    for j in range(n):
 
-    # run deconvolution
-    if args.num_threads == None:
-        C = _solve_C(X, S)
-    else:
-        C = _solve_C_parallel(X, S, args.num_threads)
+        if j > 3: break
 
-    # sanity check
-    if np.isnan(C).any() == True:
-        logging.warning("found nan")
-        C = np.nan_to_num(C)
+        # freeze X.
+        Xqp = X[:,[j]]
+        Xqp.setflags(write=False)
 
-    # save it using numpy.
-    np.save(args.C, C)
-    np.save(args.S, S)
+        # try various concentrations for missing.
+        byscore = list()
+        for cm in np.arange(0.0, 1.0, 0.1):
 
-    # note that we are done.
-    logging.info("done")
+            # compute s, c
+            #s, c, o = _sqp(Xqp, Sbase, cm, scorefn)
+            s, c, o = _missing(Xqp, Sbase, cm, scorefn)
+            
+            # debug mode.
+            if cheat_s != None or cheat_C != None:
+                
+                # simplify cheat.
+                cheat_c = cheat_C[:,j]
+                
+                # compute score.
+                byscore.append((o, scorefn(cheat_c, c), scorefn(cheat_s, s)))
+                #print '%.2f' % cm, '%.3f' % o, ' '.join(['%.3f' % x for x in c]), ' '.join(['%.3f' % x for x in s])
+    
+        # sort it.
+        byscore = sorted(byscore, key=operator.itemgetter(0))
+            
+        # save it.
+        bysample.append(byscore)
+    
+    
+        
+    # print it to the screen.
+    for i in range(len(np.arange(0.0, 1.0, 0.1))):
+        
+        row = list()
+        for s in bysample:
+            row.append('%.5f' % s[i][1])
+        
+        print ' '.join([str(i)] + row)
+        
+        
 
+
+    print "DEBUG DONE"
+    sys.exit()
+
+    # return it.
+    return C, S
 
 def _estimate_missing(x, S, cmax, features, dims):
     """ performs fixed esimate of cm and s
@@ -405,103 +480,161 @@ def _improve_missing(x, S, cmax, dims):
     # return results
     return s, c
 
-def debug_missing(args):
-    """ development for missing data"""
+
+def _missing(Xqp, Sbase, cm, scorefn):
+    """
+    determine the missing data
+    """
+    
+    # simplify.
+    m = Sbase.shape[0]
+    k = Sbase.shape[1] + 1
+
+    # create big matrix.
+    S = np.zeros((m, k))
+    for i, l in itertools.product(range(m), range(k-1)): 
+        S[i, l] = Sbase[i, l]
+
+    # guess the firsty
+    s, c, so = _sqp(Xqp, Sbase, cm, scorefn)
+
+    # fill the signature.
+    S[:,-1] = s
+
+    # save each one.
+    scores = list()
+
+    # iterativly try to improve estimate.
+    for qq in range(25):
+
+        # estimate concentration.
+        c, co = _cqp(S, Xqp, sum2=1.0, scorefn=scorefn)
+
+        # estimate signature.
+        s, so = _shqp(Xqp, Sbase, c, scorefn=scorefn)
+        
+        # update S.
+        S[:,-1] = s
+
+        # take the minimum.
+        scores.append((co, so, c, s))
+        
+    # choose maximum.
+    co, so, c, s = sorted(scores, key=operator.itemgetter(0,1))[0]
+        
+    # return the final.
+    return s, c, so
+
+
+### callable functions ###
+
+def decon(args):
+    """ main function for deconvolution"""
 
     # load data.
     X = np.load(args.X)
     Z = np.load(args.Z)
     y = np.load(args.y)
 
-    n = X.shape[1]
-    m = X.shape[0]
-    k = np.unique(y).shape[0]
+    # sanity.
+    if args.y == None and args.k == None:
+        logging.error("need to specify y or k")
+        sys.exit(1)
 
-    # compute signature.
-    S = _avg_S(Z, y)
+    # decide which method to build S.
+    if args.y != None:
+        S = _avg_S(Z, y)
+    else:
+        raise NotImplementedError, 'i pity the fool that needs this'
 
-    # compute our own C.
-    C = np.zeros((k, n), dtype=np.float)
-    for j in range(n):
-        C[:,j] = 1.0 / float(k)
+    # run deconvolution
+    if args.num_threads == None:
+        C = _solve_C(X, S)
+    else:
+        C = _solve_C_parallel(X, S, num_threads = args.num_threads)
 
-    # compute our own X.
-    X = np.dot(S, C)
+    # sanity check
+    if np.isnan(C).any() == True:
+        logging.warning("found nan")
+        C = np.nan_to_num(C)
 
-    # extract a subset to create a missing gene.
-    Sm = S[:,[0,1,2,3]]
+    # save it using numpy.
+    np.save(args.C, C)
+    np.save(args.S, S)
 
-    # identify subset of genes for use in deconvolution.
-    ytmp = np.where(y != 4)[0]
-    Ztmp = Z[:, ytmp]
+    # note that we are done.
+    logging.info("done")
+    
+
+def decon_missing(args):
+    """ main function for deconvolution with missing data"""
+
+    # debug.
+    '''
+    Sfull = np.array([
+        [0.1, 0.2, 0.7],
+        [0.7, 0.5, 0.2],
+        [0.3, 0.4, 0.1],
+        [0.9, 0.1, 0.1],
+        [0.4, 0.6, 0.7],
+        [0.1, 0.2, 0.8]])
+        
+    Ctrue = np.array([[0.3], [0.5], [0.2]])
+    X = np.dot(Sfull, Ctrue)
+    
+    # trim it.
+    Sbase = Sfull[:,[0,1]]
+    features = range(Sfull.shape[0])
+
+    # load data.
+    '''
+    X = np.load(args.X)
+    Z = np.load(args.Z)
+    y = np.load(args.y)
+
+    # sanity.
+    if args.y == None and args.k == None:
+        logging.error("need to specify y or k")
+        sys.exit(1)
+
+    # extract informative markers.
+    clf = feature_selection.SelectKBest(score_func=feature_selection.f_classif, k=10)
+    clf.fit(np.transpose(Z), y)
+    features = np.where(clf.get_support() == True)[0]
+    #features = np.arange(X.shape[0])
+    
+    # decide which method to build S.
+    if args.y != None:
+        Sbase = _avg_S(Z, y)
+    else:
+        raise NotImplementedError, 'i pity the fool that needs this'
+
+    
+    # run deconvolution
+    C, S = _solve_missing(X, Sbase, features, None)
+
+    # sanity check
+    if np.isnan(C).any() == True:
+        logging.warning("found nan")
+        C = np.nan_to_num(C)
+
+    # save it using numpy.
+    np.save(args.C, C)
+    np.save(args.S, S)
+
+    # note that we are done.
+    logging.info("done")
+
+'''
+def decon_missing(X, Sbase, features):
+    """ main function for missing data deconvolution
+        *** currently hacked for debugging purposes
+    """
 
     clf = feature_selection.SelectKBest(score_func=feature_selection.f_classif, k=20)
     clf.fit(np.transpose(Ztmp), ytmp)
     features = np.where(clf.get_support() == True)[0]
 
-    # copy the matrix.
-    decon_missing(X.copy(), Sm.copy(), features.copy())
-
-def _missing(X, S, Sbase, features, cmax, j, scorefn, dims):
-    """
-    determine the missing data
-    """
-
-    # simplify.
-    n, m, k = dims
-
-    # extract mixed vector.
-    x = X[:,j]
-
-    # create temporary signature.
-    Stmp = S.copy()
-    for i in range(m):
-        for l in range(k-1):
-            Stmp[i,l] = Sbase[i,l]
-    Stmp = Stmp[features,:]
-
-    # perform fixed estimate.
-    s, c = _estimate_missing(x, Sbase, cmax, features, (n,m,k))
-
-    # broadcast value into last column.
-    Stmp[:,-1] = s
-    xtmp = x[features]
-
-    # score it.
-    x2 = np.dot(Stmp, np.asmatrix(c).transpose())
-    x2 = np.array([x2[ee,0] for ee in range(len(features)) ])
-    score = scorefn(xtmp, x2)
-    pscore = score
-
-    # iterativly try to improve estimate.
-    for qq in range(100):
-
-        # improve it.
-        s, c = _improve_missing(xtmp, Stmp, cmax, (n,len(features),k))
-
-        # broadcast value into last column.
-        Stmp[:,-1] = s
-
-        # score it.
-        x2 = np.dot(Stmp, np.asmatrix(c).transpose())
-        x2 = np.array([x2[ee,0] for ee in range(len(features)) ])
-        score = scorefn(xtmp, x2)
-
-        # break if little improvement.
-        if pscore <= score or np.abs(pscore - score) < 0.01:
-            break
-        
-        # update score tracking.
-        pscore = score
-
-    # return the final.
-    return s, c, score
-
-
-def decon_missing(X, Sbase, features):
-    """ main function for missing data deconvolution
-        *** currently hacked for debugging purposes
-    """
 
     # extract information.
     n = X.shape[1]
@@ -530,101 +663,10 @@ def decon_missing(X, Sbase, features):
             yield j, cmax, s, c, score
             #print '%.2f' % cmax, '%.5f' % score, '%.5f' % rmse_vector(np.array([.2] * 5), c)
 
+'''
 
 
 
-
-
-
-def decon_scale(args):
-    """ main function for deconvolution"""
-
-    # load data.
-    X = np.load(args.X)
-    Z = np.load(args.Z)
-    y = np.load(args.y)
-
-    # sanity.
-    if args.y == None and args.k == None:
-        logging.error("need to specify y or k")
-        sys.exit(1)
-
-    # decide which method to build S.
-    if args.y != None:
-        S = _avg_S(Z, y)
-    else:
-        raise NotImplementedError, 'i pity the fool that needs this'
-
-    # count zeros in Z
-    k = len(np.unique(y))
-    for l in range(k):
-        SC_l = Z[:,np.where(y == l)[0]]
-
-        for i in range(Z.shape[0]):
-            SC_m = SC_l[i,:]
-
-            # compute probability.
-            f = 1.0 / float(len(np.where(SC_m == 0.0)[0])) / float(SC_m.shape[0])
-
-    # run deconvolution
-    C = _solve_C(X, S)
-
-    # sanity check
-    if np.isnan(C).any() == True:
-        logging.warning("found nan")
-        C = np.nan_to_num(C)
-
-    # save it using numpy.
-    np.save(args.C, C)
-
-    # note that we are done.
-    logging.info("done")
-
-def pca_decon(args):
-    """ main function for deconvolution"""
-
-    # load data.
-    X = np.load(args.X)
-    Z = np.load(args.Z)
-    y = np.load(args.y)
-
-    # sanity.
-    if args.y == None and args.k == None:
-        logging.error("need to specify y or k")
-        sys.exit(1)
-
-
-    # transform single-cell data.
-    Z_t = np.transpose(Z)
-    pca = PCA(n_components=3, whiten=False)
-    Z_t = pca.fit(Z_t, y).transform(Z_t)
-    Z = np.transpose(Z_t)
-
-    # decide which method to build S.
-    if args.y != None:
-        S = _avg_S(Z, y)
-    else:
-        raise NotImplementedError, 'i pity the fool that needs this'
-
-    # transoform mixture data.
-    X_t = np.transpose(X)
-    pca2 = PCA(n_components=3, whiten=False)
-    X_t = pca2.fit(X_t).transform(X_t)
-    X = np.transpose(X_t)
-
-    # run deconvolution
-    C = _solve_C(X, S)
-
-    # sanity check
-    if np.isnan(C).any() == True:
-        logging.warning("found nan")
-        C = np.nan_to_num(C)
-
-    # save it using numpy.
-    np.save(args.C, C)
-
-    # note that we are done.
-    logging.info("done")
 
 ### script ###
 
@@ -656,23 +698,7 @@ if __name__ == '__main__':
     subpp.add_argument('-S', dest='S', help='output numpy matrix')
     subpp.add_argument('-p', dest='num_threads', type=int, help='number of threads for parallel solving')
     subpp.add_argument('-k', type=int, dest='num_cluster', help='number of clusters, must be supplied if z_lbls is not')
-    subpp.set_defaults(func=debug_missing)
-
-    subpp = subp.add_parser('deconscale', help='deconvolve the single-cells and mixtures using QP, scale X by 1/missing')
-    subpp.add_argument('-X', dest='X', required=True, help='mixture: genes x samples')
-    subpp.add_argument('-Z', dest='Z', required=True, help='single-cell matrix: genes x cells')
-    subpp.add_argument('-y', dest='y', help='cell type labels for each cell')
-    subpp.add_argument('-C', dest='C', help='output numpy matrix')
-    subpp.add_argument('-k', type=int, dest='num_cluster', help='number of clusters, must be supplied if z_lbls is not')
-    subpp.set_defaults(func=decon_scale)
-
-    subpp = subp.add_parser('pcacon', help='deconvolve the single-cells and mixtures using QP on the PCA transformed data')
-    subpp.add_argument('-X', dest='X', required=True, help='mixture: genes x samples')
-    subpp.add_argument('-Z', dest='Z', required=True, help='single-cell matrix: genes x cells')
-    subpp.add_argument('-y', dest='y', help='cell type labels for each cell')
-    subpp.add_argument('-C', dest='C', help='output numpy matrix')
-    subpp.add_argument('-k', type=int, dest='num_cluster', help='number of clusters, must be supplied if z_lbls is not')
-    subpp.set_defaults(func=pca_decon)
+    subpp.set_defaults(func=decon_missing)
 
     ### pipeline ###
 

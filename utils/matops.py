@@ -91,6 +91,15 @@ def meanabs_matrix(x, y):
     for j in range(x.shape[1]):
         vals.append(meanabs_vector(x[:,j], y[:,j]))
     return np.average(np.array(vals))
+
+def meanrel_vector(x, y):
+    return np.mean(np.abs(x-y)/x)
+    
+def maxrel_vector(x, y):
+    return np.max(np.abs(x-y)/x)
+
+def minrel_vector(x, y):
+    return np.min(np.abs(x-y)/x)
     
 def maxabs_vector(x, y):
     return statsmodels.tools.eval_measures.maxabs(x, y)
