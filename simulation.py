@@ -37,8 +37,8 @@ from utils.plotting import *
 #from utils.heirheat import *
 from utils.cluster import *
 
-from scdecon import decon_missing
-from scdecon import _solve_missing
+#from scdecon import decon_missing
+#from scdecon import _solve_missing
 
 # hack to silence argparser.
 warnings.filterwarnings('ignore', category=DeprecationWarning)
@@ -237,7 +237,7 @@ def _run_it_R(wdir, script_txt, n, m, k):
     return S, C
 
 
-def _run_it_uconn(wdir, script_txt, n, m, k):
+def _run_it_uconn(wdir, script_txt, n, m, k, missing=None):
 
     # write it.
     script_file = '%s/script.sh' % wdir
@@ -266,13 +266,23 @@ def _run_it_uconn(wdir, script_txt, n, m, k):
         return None
 
     # sanity check.
-    if C.shape != (k, n) or S.shape != (m,k):
-        txt = "UCONN-script failed: %s\n" % script_file
-        txt += "bad dim\n"
-        txt += "expected: C=(%i,%i), S=(%i,%i)\n" % (k,n,m,k)
-        txt += "recieved: C=(%i,%i), S=(%i,%i)\n" % (C.shape[0], C.shape[1], S.shape[0], S.shape[1])
-        txt += '=======================\n'
-        return None
+    if missing == None:
+        if C.shape != (k, n) or S.shape != (m,k):
+            txt = "UCONN-script failed: %s\n" % script_file
+            txt += "bad dim\n"
+            txt += "expected: C=(%i,%i), S=(%i,%i)\n" % (k,n,m,k)
+            txt += "recieved: C=(%i,%i), S=(%i,%i)\n" % (C.shape[0], C.shape[1], S.shape[0], S.shape[1])
+            txt += '=======================\n'
+            return None
+
+    else:
+        if C.shape != (k + 1, n) or S.shape != (m, k + 1):
+            txt = "UCONN-script failed: %s\n" % script_file
+            txt += "bad dim\n"
+            txt += "expected: C=(%i,%i), S=(%i,%i)\n" % (k,n,m,k)
+            txt += "recieved: C=(%i,%i), S=(%i,%i)\n" % (C.shape[0], C.shape[1], S.shape[0], S.shape[1])
+            txt += '=======================\n'
+            return None
 
     # return results.
     return S, C
@@ -471,7 +481,7 @@ def _UCQP(X, Z, y, k, C_path, S_path, wdir, xtra=None):
 
     # run it.
     _run_it_uconn(wdir, '\n'.join(cmd), X.shape[1], X.shape[0], k)
-    
+
 
 
 def _UCQPM(X, Z, y, k, C_path, S_path, wdir, xtra=None):
@@ -485,6 +495,16 @@ def _UCQPM(X, Z, y, k, C_path, S_path, wdir, xtra=None):
     np.save(Xout, X)
     np.save(Zout, Z)
     np.save(yout, y)
+
+    if xtra != None:
+        Cout = '%s/C_cheat.npy' % (wdir)
+        Sout = '%s/S_cheat.npy' % (wdir)
+        Hout = '%s/H_cheat.npy' % (wdir)
+        fout = '%s/fs_cheat.npy' % (wdir)
+        np.save(Sout, xtra['S'])
+        np.save(Cout, xtra['C'])
+        np.save(Hout, xtra['H'])
+        np.save(fout, xtra['fs'])
 
     # call out method.
     cmd = list()
@@ -502,14 +522,17 @@ def _UCQPM(X, Z, y, k, C_path, S_path, wdir, xtra=None):
     tmp.append('-C %s' % C_path)
     tmp.append('-S %s' % S_path)
     tmp.append('-p 5')
+    if xtra != None:
+        tmp.append('-S_cheat %s' % Sout)
+        tmp.append('-C_cheat %s' % Cout)
+        tmp.append('-H_cheat %s' % Hout)
+        tmp.append('-fs_cheat %s' % fout)
     cmd.append(' '.join(tmp))
     cmd.append('')
     cmd.append('')
 
     # run it.
-    _run_it_uconn(wdir, '\n'.join(cmd), X.shape[1], X.shape[0], k)
-
-
+    _run_it_uconn(wdir, '\n'.join(cmd), X.shape[1], X.shape[0], k, missing=True)
 
 def _UCQPS(X, Z, y, k, C_path, wdir, xtra=None):
 
@@ -549,6 +572,45 @@ def _UCQPS(X, Z, y, k, C_path, wdir, xtra=None):
     # make executable and run.
     subprocess.call(["chmod", "u+x", run_sh])
     subprocess.call([run_sh])
+
+
+
+def _RAND(X, Z, y, k, C_path, S_path, wdir, xtra=None):
+    ''' just randomly create '''
+
+    # save them to temporary file.
+    subprocess.call(['mkdir', '-p', wdir])
+
+    Xout = '%s/X.npy' % (wdir)
+    Zout = '%s/Z.npy' % (wdir)
+    yout = '%s/y.npy' % (wdir)
+    np.save(Xout, X)
+    np.save(Zout, Z)
+    np.save(yout, y)
+
+    # call out method.
+    cmd = list()
+    cmd.append('#!/bin/bash')
+    cmd.append('# UCQP')
+    cmd.append('')
+    cmd.append('# run it.')
+    tmp = list()
+    tmp.append('python')
+    tmp.append('/home/jrl03001/code/scdecon2/scdecon.py')
+    tmp.append('decon_missing')
+    tmp.append('-X %s' % Xout)
+    tmp.append('-Z %s' % Zout)
+    tmp.append('-y %s' % yout)
+    tmp.append('-C %s' % C_path)
+    tmp.append('-S %s' % S_path)
+    tmp.append('-p 5')
+    cmd.append(' '.join(tmp))
+    cmd.append('')
+    cmd.append('')
+
+    # run it.
+    _run_it_uconn(wdir, '\n'.join(cmd), X.shape[1], X.shape[0], k, missing=True)
+
 
 def _PCQP(X, Z, y, k, C_path, wdir, xtra=None):
 
@@ -982,6 +1044,69 @@ def _sim_gen(Xs, Zs, ys, method, work_dir):
         # yield it.
         yield X, Z, y, wdir, C_path, S_path, e
 
+def _sim_C(n, m, k, c_type):
+
+    # simulate the concentrations.
+    C = np.zeros((k, n), dtype=np.float)
+    for j in range(n):
+        if c_type == 1:
+
+            # uniform.
+            C[:,j] = 1.0 / float(k)
+
+        elif c_type == 2:
+
+            # arithmetic.
+            x = [float(x) for x in range(1,k+1)]
+            random.shuffle(x)
+            x = np.array(x)
+            x = x / np.sum(x)
+            C[:,j] = x
+
+        elif c_type == 3:
+
+            # geometric.
+            x = list(np.vander([k], k)[0])
+            random.shuffle(x)
+            x = [float(z) for z in x]
+            x = np.array(x)
+            x = x / np.sum(x)
+            C[:,j] = x
+
+        else:
+            logging.error("unknown C type")
+            sys.exit(1)
+
+    return C
+
+def _sim_X_sample(n, m, k, C, ilu, Xtmp):
+
+    # sample from mixture to create X.
+    X = np.zeros((m, n), dtype=np.float)
+
+    # for each sample.
+    for j in range(n):
+
+        # choose 100 from each cell type.
+        idxs = list()
+        for a in range(k):
+
+            # compute count.
+            count = int(np.rint(w * C[a,j]) + 1)
+
+            # choose index.
+            idxs += list(np.random.choice(ilu[a], size = count))
+
+        # build big slice.
+        bs = Xtmp[:,idxs]
+
+        # assign average to sample.
+        for i in range(m):
+            X[i,j] = np.average(bs[i,:])
+
+    # return X.
+    return X
+
 ### public functions ###
 
 def create_exp1(args):
@@ -1409,14 +1534,23 @@ def create_exp4(args):
         sim = SimSingleCell(SC, sc_lbls, load=args.sim_obj)
 
     # loop over the number of experiments.
-    Xs = list()
-    Cs = list()
-    Ss = list()
-    Zs = list()
-    ZTs = list()
-    yts = list()
-    ys = list()
-    mj = list()
+    # basic data.
+    Xs = list() # mixture
+    Ss = list() # mixture
+    Cs = list() # concentrations
+    Zs = list() # samples single-cells
+    Hs = list() # signature from Z
+    ys = list() # labels of Zs
+    fs = list() # features used
+    mjs = list()  # missing cell type index.
+
+    # sampled data.
+    XGs = list() # mixtures with genes removed.
+    ZGs = list() # single-cells with genes removed
+
+    # missing.
+    ZMs = list() # single-cell with missing cell-type removed
+    yms = list() # labels with missing cell-type removed
 
     # create master S.
     S = _avg_S(sc_lbls, SC)
@@ -1429,7 +1563,6 @@ def create_exp4(args):
     for a in range(k):
         ilu[a] = np.where(xy == a)[0]
 
-
     # loop over each experiment.
     for gg in range(q):
 
@@ -1439,59 +1572,12 @@ def create_exp4(args):
         # create S-timate
         H = _avg_S(y, Z)
 
-        # simulate the concentrations.
-        C = np.zeros((k, n), dtype=np.float)
-        for j in range(n):
-            if args.c_type == 1:
+        # simulate C.
+        C = _sim_C(n, m, k, args.c_type)
 
-                # uniform.
-                C[:,j] = 1.0 / float(k)
-
-            elif args.c_type == 2:
-
-                # arithmetic.
-                x = [float(x) for x in range(1,k+1)]
-                random.shuffle(x)
-                x = np.array(x)
-                x = x / np.sum(x)
-                C[:,j] = x
-
-            elif args.c_type == 3:
-
-                # geometric.
-                x = list(np.vander([k], k)[0])
-                random.shuffle(x)
-                x = [float(z) for z in x]
-                x = np.array(x)
-                x = x / np.sum(x)
-                C[:,j] = x
-
-            else:
-                logging.error("unknown C type")
-                sys.exit(1)
-
-       # sample from mixture to create X.
-        X = np.zeros((m, n), dtype=np.float)
-
-        # for each sample.
-        for j in range(n):
-
-            # choose 100 from each cell type.
-            idxs = list()
-            for a in range(k):
-
-                # compute count.
-                count = int(np.rint(w * C[a,j]) + 1)
-
-                # choose index.
-                idxs += list(np.random.choice(ilu[a], size = count))
-
-            # build big slice.
-            bs = Xtmp[:,idxs]
-
-            # assign average to sample.
-            for i in range(m):
-                X[i,j] = np.average(bs[i,:])
+        # simulate X.
+        #X = _sim_X_sample(n, m, k, C, ilu, Xtmp)
+        X = np.dot(H, C)
 
         # add noise.
         if e != None:
@@ -1502,55 +1588,47 @@ def create_exp4(args):
         clf = feature_selection.SelectKBest(score_func=feature_selection.f_classif, k=g)
         clf.fit(np.transpose(Z), y)
         features = np.where(clf.get_support() == True)[0]
+        features.sort()
 
         # chop the genes down.
-        Z = Z[features,:]
-        X = X[features,:]
+        XG = X[features,:]
+        ZG = Z[features,:]
 
         # remove cell type.
         yidx = np.where(y != r)[0]
         ytmp = y[yidx]
-        Ztmp = Z[:, yidx]
+        Ztmp = ZG[:, yidx]
 
         # renumber stuff.
         for ll in range(r+1, k):
             ytmp[np.where(ytmp == ll)[0]] -= 1
 
-        ## debug stuff ##
-        if args.debug == True:
-            
-            # simplify
-            s = S[features,r]
-            
-            # compute Stmp
-            Stmp = _avg_S(ytmp, Ztmp)
-            
-            # call it.
-            _solve_missing(X, Stmp, np.arange(Z.shape[0]), minrel_vector, cheat_s=s, cheat_C=C)
-            
-            print "lol"
-            sys.exit()
-
-        # save to list.
+        # save basic to list.
         Xs.append(X)
-        Cs.append(C)
         Ss.append(S)
-        Zs.append(Ztmp)
-        ZTs.append(Z)
-        ys.append(ytmp)
-        yts.append(y)
-        mj.append(r)
+        Cs.append(C)
+        Zs.append(Z)
+        Hs.append(H)
+        ys.append(y)
+        fs.append(features)
+        mjs.append(r)
+
+        # sampled data.
+        XGs.append(XG)
+        ZGs.append(ZG)
+
+        # missing.
+        ZMs.append(Ztmp)
+        yms.append(ytmp)
 
     # dont save.
     if args.debug == True:
         return
-        
-    print "blarg"
-    sys.exit()
 
     # save experiment.
-    save_pickle(args.ref_file, {'Xs':Xs, 'Ss':Ss, 'Cs':Cs, 'Zs':Zs, 'ys':ys, 'ZTs':ZTs, 'yts':yts, 'mj':mj})
-    save_pickle(args.test_file, {'Xs':Xs, 'Zs':Zs, 'ys':ys})
+    save_pickle(args.ref_file, {'Xs':Xs, 'Ss':Ss, 'Cs':Cs, 'Zs':Zs, 'ZGs':ZGs, 'Hs':Hs, 'ys':ys, 'fs':fs, 'mjs':mjs})
+    save_pickle(args.test_file, {'XGs':XGs, 'ZMs':ZMs, 'yms':yms})
+
 
 def run_sim(args):
     """ runs the simulation """
@@ -1582,7 +1660,7 @@ def run_sim(args):
         # method switch.
         if method == "UCQP":
             _UCQP(*alist, xtra=args.xtra_args)
-        if method == "UCQPM":
+        elif method == "UCQPM":
             _UCQPM(*alist, xtra=args.xtra_args)
         elif method == "QPROG":
             _QPROG(*alist, xtra=args.xtra_args)
@@ -1598,6 +1676,61 @@ def run_sim(args):
             logging.error("unknown method: %s" % method)
             sys.exit(1)
 
+def run_sim_missing(args):
+    """ runs the simulation for missing data. setup to
+    allow cheating"""
+
+    # load testing data.
+    data = load_pickle(args.test_file)
+    ref = load_pickle(args.ref_file)
+    XGs = data['XGs']
+    ZMs = data['ZMs']
+    yms = data['yms']
+    k = args.k
+
+    Ss_cheat = ref['Ss']
+    Hs_cheat = ref['Hs']
+    Cs_cheat = ref['Cs']
+    fs_cheat = ref['fs']
+
+    # method name
+    method = args.method
+
+    # loop over each experiment.
+    for  X, Z, y, wdir, C_path, S_path, idx in _sim_gen(XGs, ZMs, yms, method, args.work_dir):
+
+        # check for skippability.
+        if os.path.isfile('%s/C.npy' % wdir):
+            logging.info("skipping: %s" % '%s/C.npy' % wdir)
+            continue
+
+        # make directory.
+        if os.path.isdir(wdir) == False:
+            subprocess.call(['mkdir','-p',wdir])
+
+        # cheat for UCQPC
+        if method == "UCQPC":
+
+            # get cheat elements.
+            Z = ref['ZGs'][idx]
+            y = ref['ys'][idx]
+
+        # make args list.
+        alist = (X, Z, y, k, C_path, S_path, wdir)
+
+        # method switch.
+        if method == "UCQPC":
+            _UCQP(*alist, xtra=args.xtra_args)
+        elif method == "UCQPM":
+            _UCQPM(*alist, xtra={'S':Ss_cheat[idx], 'C':Cs_cheat[idx], 'H':Hs_cheat[idx], 'fs':fs_cheat[idx]})
+        elif method == "DECONF":
+            _DECONF(*alist, xtra=args.xtra_args)
+        elif method == "RAND":
+            _RAND(*alist, xtra=args.xtra_args)
+        else:
+            logging.error("unknown method: %s" % method)
+            sys.exit(1)
+
 
 def evl_sim(args):
     """ runs the simulation """
@@ -1609,18 +1742,35 @@ def evl_sim(args):
     # simplify.
     n = ref['Xs'][0].shape[1]
     m = ref['Xs'][0].shape[0]
+    k = ref['Ss'][0].shape[1]
     q = len(ref['Xs'])
     method = args.method
     scorem = args.scorem
 
+    # setup testers.
+    if args.missing == False:
+        Xs = test['Xs']
+        Zs = test['Zs']
+        ys = test['ys']
+    else:
+        Xs = test['XGs']
+        Zs = test['ZMs']
+        ys = test['yms']
+
     # loop over each experiment.
-    for  X_test, Z_test, y_test, wdir, C_path, S_path, idx in _sim_gen(test['Xs'], test['Zs'], test['ys'], method, args.work_dir):
+    for  X_test, Z_test, y_test, wdir, C_path, S_path, idx in _sim_gen(Xs, Zs, ys, method, args.work_dir):
 
         # get elements.
+        S_ref = ref['Ss'][idx]
         X_ref = ref['Xs'][idx]
         Z_ref = ref['Zs'][idx]
+        H_ref = ref['Hs'][idx]
         C_ref = ref['Cs'][idx]
         y_ref = ref['ys'][idx]
+        features = ref['fs'][idx]
+
+        # shrink things appropriatly.
+        H_ref = H_ref[features,:]
 
         # load the test matrix.
         if os.path.isfile(C_path):
@@ -1629,9 +1779,52 @@ def evl_sim(args):
             # silenty skip missing.
             continue
 
+        # load the test matrix.
+        if os.path.isfile(S_path):
+            S_test = np.load(S_path)
+        else:
+            # silenty skip missing.
+            continue
+
         # round to 5 decimals.
         C_ref = np.round(C_ref, decimals=5)
         C_test = np.round(C_test, decimals=5)
+
+        # missing.
+        if args.missing == True:
+
+            # grab missing specific.
+            mj = ref['mjs'][idx]
+
+            # insert new one.
+            if args.method == "UCQPM":
+
+                # remap the row order for C
+                Ctmp = C_test.copy()
+                C_test[mj, :] = Ctmp[-1,:]
+                for l in range(mj+1, k):
+                    C_test[l, :] = Ctmp[l-1, :]
+
+                # remap the column order for H/S
+                Stmp = S_test.copy()
+                S_test[:, mj] = S_test[:,-1]
+                for l in range(mj+1, k):
+                    S_test[:, l] = Stmp[:, l-1]
+
+            elif args.method == "DECONF":
+
+                # find ordering by matching and pearson correlation.
+                order = match_signatures(H_ref, S_test)
+
+                # rorder S and C
+                S_test = S_test[:,order]
+                C_test = C_test[order,:]
+
+            elif args.method == "UCQPC":
+                pass
+
+            else:
+                raise NotImplementedError
 
         # set the scoring function.
         if scorem == 'rmse':
@@ -1660,8 +1853,14 @@ def evl_sim(args):
         for i in range(C_ref.shape[0]):
             scores.append(metric(C_ref[i,:], C_test[i,:]))
 
-        # print the results.
-        txt = ' '.join(['%.5f' % x for x in scores])
+        # compute missing signature score.
+        if args.missing == True or args.ucqpc == True:
+            s_score = metric(H_ref[:, mj], S_test[:, mj])
+            txt = ' '.join(['%.5f' % x for x in [s_score] + scores])
+        else:
+            # print the results.
+            txt = ' '.join(['%.5f' % x for x in [s_score] + scores])
+
         print txt
 
 ### script ###
@@ -1757,7 +1956,7 @@ if __name__ == '__main__':
     subpp.add_argument('-sd', dest='sim_dir', required=True, help='simulation directory for validation')
     subpp.add_argument('-debug', dest='debug', action='store_true', help='debug mode: for developer')
     subpp.set_defaults(func=create_exp4)
-    
+
 
     ## run simulations ##
     subpp = subp.add_parser('run_sim', help='run simulation 3')
@@ -1768,6 +1967,15 @@ if __name__ == '__main__':
     subpp.add_argument('-x', dest='xtra_args', help='optional arguments: comma sep list')
     subpp.set_defaults(func=run_sim)
 
+    subpp = subp.add_parser('run_sim_missing', help='run simulation with missing data')
+    subpp.add_argument('-td', dest='test_file', required=True, help='the test file')
+    subpp.add_argument('-rd', dest='ref_file', required=True, help='serialized experiment file')
+    subpp.add_argument('-wd', dest='work_dir', required=True, help='working directory for temporary files')
+    subpp.add_argument('-k', dest='k', required=True, type=int, help='number of cell types')
+    subpp.add_argument('-m', dest='method', required=True, help='method to test')
+    subpp.add_argument('-x', dest='xtra_args', help='optional arguments: comma sep list')
+    subpp.set_defaults(func=run_sim_missing)
+
     ## evaluate simulations ##
     subpp = subp.add_parser('evl_sim', help='evaluate simulation')
     subpp.add_argument('-tf', dest='test_file', required=True, help='the test file')
@@ -1776,6 +1984,7 @@ if __name__ == '__main__':
     subpp.add_argument('-m', dest='method', required=True, help='method to test')
     subpp.add_argument('-s', dest='scorem', required=True, help='metric to use')
     #subpp.add_argument('-out', dest='out_file', required=True, help='output file')
+    subpp.add_argument('-missing', dest='missing', action='store_true', help='adds missing signature info')
     subpp.set_defaults(func=evl_sim)
 
     ## testing and random stuff ##

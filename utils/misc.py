@@ -2,6 +2,9 @@ import cPickle as pickle
 import numpy as np
 import networkx as nx
 import operator
+import sys
+import itertools
+from scipy.stats import pearsonr
 
 def save_pickle(out_file, the_list):
     """ saves list of numpy """
@@ -14,6 +17,43 @@ def load_pickle(in_file):
         data = pickle.load(fin)
     return data
 
+def match_signatures(S, T):
+    ''' user perason match columns '''
+
+    # sanity check columns.
+    assert S.shape[1] == T.shape[1], 'columns must have same dimension'
+
+    # labels.
+    labels = range(S.shape[1])
+
+    # build bipartite graph.
+    G = nx.Graph()
+    for l in labels:
+        G.add_node("S_%i" % l)
+        G.add_node("T_%i" % l)
+
+    # build edges.
+    for p in labels:
+        for q in labels:
+
+            # compute perasonr.
+            weight = pearsonr(S[:,p], T[:,q])
+
+            # add edge.
+            a = "S_%i" % p
+            b = "T_%i" % q
+            G.add_edge(a, b, weight=weight[0])
+
+    # find matching.
+    matches = nx.max_weight_matching(G, maxcardinality=True)
+
+    # record the sort order.
+    order = list()
+    for l in labels:
+        order.append(int(matches["T_%i" % l].replace("S_","")))
+
+    # return the final re-ordering matrix.
+    return order
 
 
 def match_labels(truth, test):

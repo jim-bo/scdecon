@@ -86,6 +86,9 @@ def nrmse_matrix(x, y):
 def meanabs_vector(x, y):
     return statsmodels.tools.eval_measures.meanabs(x, y)
 
+def sumabs_vector(x, y):
+    return np.sum(np.abs(x-y))
+
 def meanabs_matrix(x, y):
     vals = list()
     for j in range(x.shape[1]):
