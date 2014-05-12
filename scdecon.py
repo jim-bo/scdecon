@@ -329,7 +329,7 @@ def _x_SM_c(x, SM, cguess):
     # return it
     return s, c, o
 
-def _nllsq2(X, SM):
+def _nllsq(X, SM):
     ''' solves for missing cell-type using concentration guess
         X = (m x n)
         SM = (m x k-1)
@@ -373,7 +373,10 @@ def _nllsq2(X, SM):
     SU[:,0:k-1] = SM[:,:]
 
     # do fit, here with leastsq model
-    result = minimize(_lstsq3, params, args=(X, SU, CU, XUD, XUS))
+    try:
+        result = minimize(_lstsq_sC, params, args=(X, SU, CU, XUD, XUS))
+    except ZeroDivisionError as e:
+        return None, "ZeroDivisionError", e
     
     # extract results.
     for l in range(k):
@@ -393,7 +396,7 @@ def _nllsq2(X, SM):
     # return it all.
     return SU[:, -1], CU, o
 
-def _lstsq3(params, XT, SU, CU, XUD, XUS):
+def _lstsq_sC(params, XT, SU, CU, XUD, XUS):
 
     # dimension.
     n = XT.shape[1]
@@ -417,112 +420,6 @@ def _lstsq3(params, XT, SU, CU, XUD, XUS):
     
     # return the residual
     return XUS.flatten()
-
-
-def _nllsq1(X, SM):
-    ''' solves for missing cell-type using concentration guess
-        X = (m x n)
-        SM = (m x k-1)
-        C = (k, n)
-    '''
-
-    # hack data.
-    ST = np.array([
-        [4, 9],
-        [2, 5],
-        [1, 11]])
-        
-    CT = np.array([
-        [.2, .5],
-        [.8, .5]])
-        
-    X = np.dot(ST, CT)
-
-    # simplify.
-    n = X.shape[1]
-    m = X.shape[0]
-    k = SM.shape[1]
-
-    
-    # create parameters.
-    params = Parameters()
-    
-    # add one for k-1, j constraints
-    for j in range(n):
-        for l in range(k -1):
-        
-            # build the parameter.
-            params.add('C%i%i' % (l, j), value=1.0 / float(k), min=0.0, max=1.0, vary=True)
-        
-        # add sum to 1 constraint.    
-        constr = '1.0 - ' + '+'.join(['C%i%i' % (l, j) for l in range(0,k-1)])
-        
-        # add last variable.
-        params.add('C%i%i' % (k-1, j), value=1.0 / float(k), min=0.0, max=1.0, vary=True, expr=constr)
-
-    # create parameter matrix.
-    C = np.zeros((k, n))
-
-    # do fit, here with leastsq model
-    result = minimize(_lstsq2, params, args=(X, ST, CT))
-    
-    # extract results.
-    for l in range(k):
-        for j in range(n):
-             C[l, j] = params['C%i%i' % (l, j)].value
-    
-    print CT
-    print C
-    
-    # write error report
-    #report_fit(params)
-    
-    print "MONEY"
-    sys.exit()
-
-
-def _lstsq2(params, X, S, C):
-
-    # dimension.
-    n = X.shape[1]
-    m = X.shape[0]
-    k = C.shape[0]
-
-    # populate concentrations.
-    for l in range(k):
-        for j in range(n):
-            C[l, j] = params['C%i%i' % (l, j)].value
-    
-    # compute dot product.
-    XP = np.dot(S, C)
-    
-    # compute the absolute difference.
-    D = np.abs(XP - X)
-    
-    # return the residual
-    return D.flatten()
-
-def _lstsq1(params, x, S, c):
-
-    # dimension.
-    n = 1
-    m = x.shape
-    k = c.shape[0]
-
-    # populate concentrations.
-    for l in range(k):
-        c[l] = params['c%i0' % l].value
-        c[l] = params['c%i0' % l].value
-    
-    # compute dot product.
-    xp = np.dot(S, c)
-    
-    # compute the absolute difference.
-    d = np.abs(xp - x)
-    
-    # return the residual
-    return d
-    
     
 def _solve_C(X, S, num_threads=1):
     """ solves using QP and multiprocessing """
@@ -865,11 +762,8 @@ def _debug_x_SM_c(dims, verbose=False):
     return n, m, k, err_s, err_c
 
     
-def _debug_nllsq(dims, verbose=False):
-    
-    # extract.
-    n, m, k = dims
-    
+def _debug_nllsq(n, m, k, verbose=False):
+        
     # create simulation.
     X, S, SM, C = _debug_setup(n, m, k)
     
@@ -878,7 +772,12 @@ def _debug_nllsq(dims, verbose=False):
     err_c = 0.0
     
     # solve them straight up.
-    sp, CP, o = _nllsq2(X, SM)
+    sp, CP, o = _nllsq(X, SM)
+    
+    # error check.
+    if sp == None:
+        logging.error("nnlsq: %i %i %i:%s" % (n ,m, k, CP))
+        return n, m, k, None, CP, o
     
     # score the s vector
     score_s = meanabs_vector(S[:,-1], sp)
@@ -888,7 +787,7 @@ def _debug_nllsq(dims, verbose=False):
     score_c = np.average(np.array([meanabs_vector(C[:,j], CP[:,j]) for j in range(n)]))
             
     # print it.
-    if verbose: logging.debug("nnlsq2: %.5f %.5f %.5f" % (score_s, score_c, o))
+    if verbose: logging.debug("nnlsq: %i %i %i %.5f %.5f %.5f" % (n, m, k, score_s, score_c, o))
     
     # return total error.
     return n, m, k, score_s, score_c
@@ -904,12 +803,6 @@ def _debug_x_SM_c_noguess(dims, verbose=False):
     # track total error.
     err_s = 0.0
     err_c = 0.0
-    
-    # solve them straight up.
-    _nllsq1(X, SM)
-    print "dood"
-    sys.exit()
-    
     
     # solve each sample individually.
     if verbose: logging.debug("_x_SM_c_noguess:")
@@ -939,14 +832,9 @@ def _debug_x_SM_c_noguess(dims, verbose=False):
             # compare it.
             if verbose: logging.debug("%i: %.5f %.5f %.5f %.5f %.5f" % (j, tguess, cguess, score_s, score_c, o))
     
-        sys.exit()
-    
     # take the mean.
     err_s /= n
     err_c /= n
-    
-    print err_c
-    
     
     # note its ability.
     if verbose: logging.debug("_x_SM_c_noguess: %.5f %.5f" % (err_s, err_c))
@@ -984,7 +872,7 @@ def _debug_setup(n, m, k):
     # return everything.
     return X, S, SM, C
 
-def _debug_runit(nlist, mlist, klist, repeat, fn, parallel=0):
+def _debug_runit(nlist, mlist, klist, repeat, fn, parallel=0, verbose=False):
 
         
     # create parameter lists.
@@ -1004,13 +892,24 @@ def _debug_runit(nlist, mlist, klist, repeat, fn, parallel=0):
         # run it serial.
         jobs = list()
         for n, m, k in its:
-            jobs.append(fn((n, m, k), verbose=True))
+            jobs.append(fn(n, m, k, verbose=verbose))
 
     else:
         
-        # run it parellel.
-        pool = Pool(processes = 20)
-        jobs = pool.map(fn, its)
+        # create the pool.
+        pool = Pool(processes = parallel)
+        
+        # add jobs.
+        ares = list()
+        for n, m, k in its:
+            ares.append(pool.apply_async(fn, (n, m, k), dict(verbose=verbose)))
+            
+        # close and get results.
+        pool.close()
+        pool.join()
+        
+        # get results.
+        jobs = [a.get() for a in ares]      
         
     # return the results.
     return jobs
@@ -1046,6 +945,10 @@ def _debug_extract_2(jobs):
         # save dictionary.
         if key not in result:
             result[key] = [list(), list()]
+        
+        # skip if bad.
+        if co == None:
+            continue
         
         # save result.
         result[key][0].append(co)
@@ -1233,12 +1136,12 @@ def debug_master(args):
     if 1 == 1:
         
         # create parameter lists.
-        nlist = np.arange(5, 25, 5)
-        mlist = np.arange(5, 25, 5)
-        klist = np.arange(2, 6, 1)
+        nlist = np.arange(2, 24, 2)
+        mlist = np.arange(2, 46, 2)
+        klist = np.arange(2, 10, 1)
 
         # run it
-        jobs = _debug_runit(nlist, mlist, klist, 10, _debug_nllsq, parallel=20)
+        jobs = _debug_runit(nlist, mlist, klist, 10, _debug_nllsq, parallel=20, verbose=True)
         
         # extract results.
         results = _debug_extract_2(jobs)    
