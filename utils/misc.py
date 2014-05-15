@@ -6,6 +6,69 @@ import sys
 import itertools
 from scipy.stats import pearsonr
 
+def run_it_uconn(wdir, script_txt, n, m, k, missing=None):
+
+    # write it.
+    script_file = '%s/script.sh' % wdir
+    with open(script_file, "wb") as fout:
+        fout.write(script_txt)
+
+    # run it.
+    try:
+        retval = subprocess.check_output(["sh", script_file], stderr=subprocess.STDOUT)
+    except subprocess.CalledProcessError as e:
+        txt = "UCONN-script failed: %s\n" % script_file
+        txt += '%s\n' % e.output
+        txt += '=======================\n'
+        logging.error(txt)
+        return None
+
+    # load it.
+    try:
+        C = np.load('%s/C.npy' % wdir)
+        S = np.load('%s/S.npy' % wdir)
+    except:
+        txt = "UCONN-script failed: %s\n" % script_file
+        txt += "couldn't find matrix\n"
+        txt += '=======================\n'
+        logging.error(txt)
+        return None
+
+    # sanity check.
+    if missing == None:
+        if C.shape != (k, n) or S.shape != (m,k):
+            txt = "UCONN-script failed: %s\n" % script_file
+            txt += "bad dim\n"
+            txt += "expected: C=(%i,%i), S=(%i,%i)\n" % (k,n,m,k)
+            txt += "recieved: C=(%i,%i), S=(%i,%i)\n" % (C.shape[0], C.shape[1], S.shape[0], S.shape[1])
+            txt += '=======================\n'
+            return None
+
+    else:
+        if C.shape != (k + 1, n) or S.shape != (m, k + 1):
+            txt = "UCONN-script failed: %s\n" % script_file
+            txt += "bad dim\n"
+            txt += "expected: C=(%i,%i), S=(%i,%i)\n" % (k,n,m,k)
+            txt += "recieved: C=(%i,%i), S=(%i,%i)\n" % (C.shape[0], C.shape[1], S.shape[0], S.shape[1])
+            txt += '=======================\n'
+            return None
+
+    # return results.
+    return S, C
+
+def write_r_mat(out_file, Z):
+    """ writes R formated matrix"""
+
+    # open file,
+    with open(out_file, "wb") as fout:
+
+        # write header.
+        fout.write('\t'.join(['sample_%i' % i for i in range(Z.shape[1])]) + '\n')
+
+        # write data.
+        for i in range(Z.shape[0]):
+            fout.write('gene_%i\t' % i + '\t'.join(['%f' % v for v in Z[i,:]]) + '\n')
+
 def save_pickle(out_file, the_list):
     """ saves list of numpy """
     with open(out_file, "wb") as fout:

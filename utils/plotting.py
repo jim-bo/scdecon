@@ -7,6 +7,8 @@ warnings.filterwarnings("ignore")
 import numpy as np
 #import brewer2mpl
 import pandas as pd
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.pylab as plb
 import matplotlib.gridspec as gridspec
@@ -26,7 +28,7 @@ from sklearn.decomposition import PCA
 # application.
 from utils.matops import *
 from utils.misc import *
-from simulation import _sim_gen
+#from simulation import _sim_gen
 
 ## high-level functions ##
 def pca_X_Z(X, Z, y, figure_path):
@@ -64,7 +66,7 @@ def pca_X_Z(X, Z, y, figure_path):
     plt.legend()
     plt.savefig(figure_path)
 
-def pca_Z(args):
+def pca_sc(args):
     """ plots the experiment """
 
     # simplify.
@@ -95,6 +97,10 @@ def pca_Z(args):
         # plot it.
         plt.scatter(Zp[y == i, 0], Zp[y == i, 1], c=color, label=label)
 
+    # add labels.
+    plt.xlabel("component 1")
+    plt.ylabel("component 2")
+
     # add legend.
     plt.legend()
     plt.savefig(figure_path)
@@ -102,7 +108,7 @@ def pca_Z(args):
 
 def plot_scatter(args):
     """ plots experiment as scatter plot """
-    
+
     # load data.
     test = load_pickle(args.test_file)
     ref = load_pickle(args.ref_file)
@@ -124,7 +130,7 @@ def plot_scatter(args):
         Z_ref = ref['Zs'][idx]
         C_ref = ref['Cs'][idx]
         y_ref = ref['ys'][idx]
-        
+
         # load the test matrix.
         if os.path.isfile(C_path):
             C_test = np.load(C_path)
@@ -141,7 +147,7 @@ def plot_scatter(args):
             for l in range(C_ref.shape[0]):
                 if l not in bycell:
                     bycell[l] = [list(), list()]
-                
+
                 bycell[l][0].append(C_ref[l,j])
                 bycell[l][1].append(C_test[l,j])
 
@@ -150,43 +156,43 @@ def plot_scatter(args):
     num_colors = len(unique_vals)
     cmap = plt.get_cmap('gist_rainbow')
     cnorm  = colors.Normalize(vmin=0, vmax=num_colors-1)
-    scalarMap = cm.ScalarMappable(norm=cnorm, cmap=cmap)                
-        
+    scalarMap = cm.ScalarMappable(norm=cnorm, cmap=cmap)
+
     # print them
     for l in bycell:
 
         # get data.
         x = np.array(bycell[l][0])
         y = np.array(bycell[l][1])
-        
+
         # plot the regression.
         fit = plb.polyfit(x, y, 1)
         fit_fn = plb.poly1d(fit)
-        
+
         # compute r^2
         yhat = fit_fn(x)
         ybar = np.sum(y)/len(y)
         ssreg = np.sum((yhat-ybar)**2)
         sstot = np.sum((y-ybar)**2)
         r2 = ssreg / sstot
-        
+
         # compute the color.
         color = cmap(1.*l/num_colors)
-        
+
         # plot the points.
         plt.plot(x, y, '.', color=color, label='%i, r^2=%.2f' % (l,r2))
-        
+
         # plot the regression.
         plt.plot(x, fit_fn(x), '--', color=color)
-        
+
         # plot middle line.
         plt.plot(np.arange(0,1.1,.1), np.arange(0,1.1,.1), '-', color='black')
 
     # add legend.
     plt.legend()
     plt.savefig(args.fig_file)
-                
-        
+
+
 
 def gene_histo(xlist, figure_path, title):
     """ plots histogram for gene """

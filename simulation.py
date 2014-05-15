@@ -31,14 +31,11 @@ logging.basicConfig(level=logging.DEBUG, format='[%(levelname)s] %(message)s', )
 
 # app
 from utils.matops import *
-#from utils.rfuncs import *
 from utils.misc import *
 from utils.plotting import *
 #from utils.heirheat import *
-from utils.cluster import *
-
-#from scdecon import decon_missing
-#from scdecon import _solve_missing
+#from utils.cluster import *
+from utils.rfuncs import *
 
 # hack to silence argparser.
 warnings.filterwarnings('ignore', category=DeprecationWarning)
@@ -64,7 +61,6 @@ warnings.filterwarnings('ignore', category=DeprecationWarning)
 # k: a
 # l: b
 ### classes ###
-
 
 class SimSingleCell(object):
     """ simulates single cells """
@@ -194,874 +190,24 @@ class SimSingleCell(object):
                 self.rv_pa[(i,l)] = bernoulli(self.pa_p[i,l])
 
 
-### private functions ###
+def _create_C(n, k, c_type):
 
-def _run_it_R(wdir, script_txt, n, m, k):
+    # create the object.
+    C = np.zeros((k,n))
 
-    # write it.
-    script_file = '%s/script.R' % wdir
-    with open(script_file, "wb") as fout:
-        fout.write(script_txt)
-
-    # run it.
-    try:
-        retval = subprocess.check_output(["Rscript", script_file], stderr=subprocess.STDOUT, env=os.environ)
-    except subprocess.CalledProcessError as e:
-        txt = "R-script failed: %s\n" % script_file
-        txt += '%s\n' % e.output
-        txt += '=======================\n'
-        logging.error(txt)
-        return None
-
-    # load it.
-    try:
-        C = np.loadtxt('%s/C.txt' % wdir)
-        S = np.loadtxt('%s/S.txt' % wdir)
-    except:
-        txt = "R-script failed: %s\n" % script_file
-        txt += "couldn't find matrix\n"
-        txt += '=======================\n'
-        logging.error(txt)
-        return None
-
-    # sanity check.
-    if C.shape != (k, n) or S.shape[1] != (k):
-        txt = "R-script bad dim: %s\n" % script_file
-        txt += "expected: C=(%i,%i), S=(%i,%i)\n" % (k,n,m,k)
-        txt += "recieved: C=(%i,%i), S=(%i,%i)\n" % (C.shape[0], C.shape[1], S.shape[0], S.shape[1])
-        txt += '=======================\n'
-        logging.error(txt)
-        return None
-
-    # return results.
-    return S, C
-
-
-def _run_it_uconn(wdir, script_txt, n, m, k, missing=None):
-
-    # write it.
-    script_file = '%s/script.sh' % wdir
-    with open(script_file, "wb") as fout:
-        fout.write(script_txt)
-
-    # run it.
-    try:
-        retval = subprocess.check_output(["sh", script_file], stderr=subprocess.STDOUT)
-    except subprocess.CalledProcessError as e:
-        txt = "UCONN-script failed: %s\n" % script_file
-        txt += '%s\n' % e.output
-        txt += '=======================\n'
-        logging.error(txt)
-        return None
-
-    # load it.
-    try:
-        C = np.load('%s/C.npy' % wdir)
-        S = np.load('%s/S.npy' % wdir)
-    except:
-        txt = "UCONN-script failed: %s\n" % script_file
-        txt += "couldn't find matrix\n"
-        txt += '=======================\n'
-        logging.error(txt)
-        return None
-
-    # sanity check.
-    if missing == None:
-        if C.shape != (k, n) or S.shape != (m,k):
-            txt = "UCONN-script failed: %s\n" % script_file
-            txt += "bad dim\n"
-            txt += "expected: C=(%i,%i), S=(%i,%i)\n" % (k,n,m,k)
-            txt += "recieved: C=(%i,%i), S=(%i,%i)\n" % (C.shape[0], C.shape[1], S.shape[0], S.shape[1])
-            txt += '=======================\n'
-            return None
-
-    else:
-        if C.shape != (k + 1, n) or S.shape != (m, k + 1):
-            txt = "UCONN-script failed: %s\n" % script_file
-            txt += "bad dim\n"
-            txt += "expected: C=(%i,%i), S=(%i,%i)\n" % (k,n,m,k)
-            txt += "recieved: C=(%i,%i), S=(%i,%i)\n" % (C.shape[0], C.shape[1], S.shape[0], S.shape[1])
-            txt += '=======================\n'
-            return None
-
-    # return results.
-    return S, C
-
-def _avg_S(sc_lbls, SC):
-    """ create S from known labels """
-    S, cats = avg_cat(sc_lbls, np.transpose(SC))
-    return S
-
-def _log_noise(a, b, c):
-    """ log noise matrix """
-
-    # create random number
-    N = np.random.uniform(size=(a,b))
-
-    # multiple by ln2.
-    N = np.exp(N * math.log(2) * c)
-
-    return N
-
-
-def _pick_housekeeping(mat, detectors, candidates, minH=1, maxH=10, thres=0.15):
-    """
-        Compute Internal control gene-stability measure M described in
-        Vandesompele et al., 2002
-        Consider only detectors with no missing values
-        Inputs: mat: n x m matrix of Ct values, n is the number of samples,
-               m is the number of detectors
-               detectors: correspond to the columns of mat
-               candidates: candidate housekeeping detectors
-               thres: cut-off value of pairwise variation
-        Output: a list of housekeeping genes
-    """
-
-    # candidates must be highly expression.
-    candidates = list()
-    for j in range(mat.shape[1]):
-        if np.average(mat[:,j]) < 26:
-            candidates.append(j)
-    detectors = np.array(detectors)
-    n, m = mat.shape
-    noMissing = ~np.any(np.isnan(mat), axis=0)
-    indices = np.arange(m)[noMissing]
-    cIndices = []
-    for i in indices: # Filter out non-candidates
-        if detectors[i] in candidates: cIndices.append(i)
-    cIndices = np.array(cIndices)
-    h = len(cIndices)
-    if h <= minH: return detectors[cIndices]
-    M = []
-    for i in cIndices: # candidate indices
-        # log-transformed expression ratios
-        tmp = mat[:, cIndices].T - mat[:, i] # transposed: columns are samples
-        M.append( np.std(tmp, axis=1).sum() / (h-1) ) # std across samples
-    M = np.array(M); indices = M.argsort()
-    M = M[indices]; cIndices = cIndices[indices]
-    # Old normalization factor. Sum of n Ct vectors. Needs to be divided by n.
-    nfOld = mat[:, cIndices[:minH]].sum(axis=1)
-    for i in xrange(minH, min(maxH, h)):
-        nfNew = nfOld + mat[:, cIndices[i]]
-        std = np.std(nfNew/(i + 1) - nfOld/i)
-        if std < thres: break # No need to include cIndices[i]
-        nfOld = nfNew
-    return detectors[cIndices[:i]].tolist()
-
-
-
-### callable functions ###
-
-def load_mmc3_figure1b(args):
-    ''' mmc3_figure1b '''
-
-    # defined labels. PSC is missing
-    labels = set(['HSC','NSC','MASC','ISC', 'PSC'])
-
-    # open csv
-    samples = dict()
-    with open(args.input_file) as fin:
-
-        # loop and parse.
-        for line in fin:
-
-            # parse.
-            line = line.strip().split("\t")
-
-            # look for hit.
-            if line[0] in labels:
-
-                # create first.
-                if line[0] not in samples:
-                    samples[line[0]] = [line[1::], list()]
-                    continue
-
-                # add hits.
-                samples[line[0]][1].append( [float(x) for x in line[1::]] )
-
-
-
-    # sanity check overlap in genes.
-    keys = samples.keys()
-    for i in range(1, len(keys)):
-        key1 = keys[i-1]
-        key2 = keys[i]
-        if samples[key1][0] != samples[key2][0]:
-            logging.error("genes don't match")
-            sys.exit()
-        biomarkers = samples[key1][0]
-
-    # reformat.
-    for key in keys:
-        samples[key] = samples[key][1]
-
-    # simplify sizes.
-    nb = len(biomarkers)
-    nc = len(samples)
-    nsc = sum([len(samples[x]) for x in samples])
-
-    # create gene labels.
-    b_lbls = np.array(biomarkers)
-    blu = dict()
-    for i in range(len(b_lbls)):
-        blu[b_lbls[i]] = i
-
-
-    # create SC matrix.
-    SC = np.zeros((nb, nsc), dtype=np.float)
-
-    # label arrays.
-    c_lbls = np.array(list(labels))
-    clu = dict()
-    k = 0
-    for k in range(len(c_lbls)):
-        clu[c_lbls[k]] = k
-
-    sc_lbls = np.zeros(nsc, dtype=np.int)
-
-    # load data into SC matrix.
-    l = 0
-    for c in samples:
-
-        # process each sample.
-        for s in samples[c]:
-
-            # save data.
-            for i in range(len(s)):
-                SC[i,l] = s[i]
-
-            # save label.
-            sc_lbls[l] = clu[c]
-            l += 1
-
-    # put into linear form.
-    SC = np.square(SC)
-
-    # shink clu just to the unique and sorted variety.
-    c_lbls = np.array([x[0] for x in sorted(clu.items(), key=operator.itemgetter(1))])
-
-    # create input.
-    np.save(args.SC, SC)
-    np.save(args.sc_lbls, sc_lbls)
-    np.save(args.c_lbls, c_lbls)
-    np.save(args.b_lbls, b_lbls)
-
-
-def _UCQP(X, Z, y, k, C_path, S_path, wdir, xtra=None):
-
-    # save them to temporary file.
-    subprocess.call(['mkdir', '-p', wdir])
-
-    Xout = '%s/X.npy' % (wdir)
-    Zout = '%s/Z.npy' % (wdir)
-    yout = '%s/y.npy' % (wdir)
-    np.save(Xout, X)
-    np.save(Zout, Z)
-    np.save(yout, y)
-
-    # call out method.
-    cmd = list()
-    cmd.append('#!/bin/bash')
-    cmd.append('# UCQP')
-    cmd.append('')
-    cmd.append('# run it.')
-    tmp = list()
-    tmp.append('python')
-    tmp.append('/home/jrl03001/code/scdecon2/scdecon.py')
-    tmp.append('decon')
-    tmp.append('-X %s' % Xout)
-    tmp.append('-Z %s' % Zout)
-    tmp.append('-y %s' % yout)
-    tmp.append('-C %s' % C_path)
-    tmp.append('-S %s' % S_path)
-    tmp.append('-p 5')
-    cmd.append(' '.join(tmp))
-    cmd.append('')
-    cmd.append('')
-
-    # run it.
-    _run_it_uconn(wdir, '\n'.join(cmd), X.shape[1], X.shape[0], k)
-
-
-
-def _UCQPM(X, Z, y, k, C_path, S_path, wdir, xtra=None):
-
-    # save them to temporary file.
-    subprocess.call(['mkdir', '-p', wdir])
-
-    Xout = '%s/X.npy' % (wdir)
-    Zout = '%s/Z.npy' % (wdir)
-    yout = '%s/y.npy' % (wdir)
-    np.save(Xout, X)
-    np.save(Zout, Z)
-    np.save(yout, y)
-
-    if xtra != None:
-        Cout = '%s/C_cheat.npy' % (wdir)
-        Sout = '%s/S_cheat.npy' % (wdir)
-        Hout = '%s/H_cheat.npy' % (wdir)
-        fout = '%s/fs_cheat.npy' % (wdir)
-        np.save(Sout, xtra['S'])
-        np.save(Cout, xtra['C'])
-        np.save(Hout, xtra['H'])
-        np.save(fout, xtra['fs'])
-
-    # call out method.
-    cmd = list()
-    cmd.append('#!/bin/bash')
-    cmd.append('# UCQP')
-    cmd.append('')
-    cmd.append('# run it.')
-    tmp = list()
-    tmp.append('python')
-    tmp.append('/home/jrl03001/code/scdecon2/scdecon.py')
-    tmp.append('decon_missing')
-    tmp.append('-X %s' % Xout)
-    tmp.append('-Z %s' % Zout)
-    tmp.append('-y %s' % yout)
-    tmp.append('-C %s' % C_path)
-    tmp.append('-S %s' % S_path)
-    tmp.append('-p 5')
-    if xtra != None:
-        tmp.append('-S_cheat %s' % Sout)
-        tmp.append('-C_cheat %s' % Cout)
-        tmp.append('-H_cheat %s' % Hout)
-        tmp.append('-fs_cheat %s' % fout)
-    cmd.append(' '.join(tmp))
-    cmd.append('')
-    cmd.append('')
-
-    # run it.
-    _run_it_uconn(wdir, '\n'.join(cmd), X.shape[1], X.shape[0], k, missing=True)
-
-def _UCQPS(X, Z, y, k, C_path, wdir, xtra=None):
-
-    # save them to temporary file.
-    subprocess.call(['mkdir', '-p', wdir])
-
-    Xout = '%s/X.npy' % (wdir)
-    Zout = '%s/Z.npy' % (wdir)
-    yout = '%s/y.npy' % (wdir)
-    np.save(Xout, X)
-    np.save(Zout, Z)
-    np.save(yout, y)
-
-    # call out method.
-    cmd = list()
-    cmd.append('#!/bin/bash')
-    cmd.append('# UCQPS')
-    cmd.append('')
-    cmd.append('# run it.')
-    tmp = list()
-    tmp.append('python')
-    tmp.append('/home/jrl03001/code/scdecon2/scdecon.py')
-    tmp.append('deconscale')
-    tmp.append('-X %s' % Xout)
-    tmp.append('-Z %s' % Zout)
-    tmp.append('-y %s' % yout)
-    tmp.append('-C %s' % C_path)
-    cmd.append(' '.join(tmp))
-    cmd.append('')
-    cmd.append('')
-
-    # open script file.
-    run_sh = '%s/run.sh' % (wdir)
-    with open(run_sh, "w") as fout:
-        fout.write('\n'.join(cmd))
-
-    # make executable and run.
-    subprocess.call(["chmod", "u+x", run_sh])
-    subprocess.call([run_sh])
-
-
-
-def _RAND(X, Z, y, k, C_path, S_path, wdir, xtra=None):
-    ''' just randomly create '''
-
-    # save them to temporary file.
-    subprocess.call(['mkdir', '-p', wdir])
-
-    Xout = '%s/X.npy' % (wdir)
-    Zout = '%s/Z.npy' % (wdir)
-    yout = '%s/y.npy' % (wdir)
-    np.save(Xout, X)
-    np.save(Zout, Z)
-    np.save(yout, y)
-
-    # call out method.
-    cmd = list()
-    cmd.append('#!/bin/bash')
-    cmd.append('# UCQP')
-    cmd.append('')
-    cmd.append('# run it.')
-    tmp = list()
-    tmp.append('python')
-    tmp.append('/home/jrl03001/code/scdecon2/scdecon.py')
-    tmp.append('decon_missing')
-    tmp.append('-X %s' % Xout)
-    tmp.append('-Z %s' % Zout)
-    tmp.append('-y %s' % yout)
-    tmp.append('-C %s' % C_path)
-    tmp.append('-S %s' % S_path)
-    tmp.append('-p 5')
-    cmd.append(' '.join(tmp))
-    cmd.append('')
-    cmd.append('')
-
-    # run it.
-    _run_it_uconn(wdir, '\n'.join(cmd), X.shape[1], X.shape[0], k, missing=True)
-
-
-def _PCQP(X, Z, y, k, C_path, wdir, xtra=None):
-
-    # save them to temporary file.
-    subprocess.call(['mkdir', '-p', wdir])
-
-    Xout = '%s/X.npy' % (wdir)
-    Zout = '%s/Z.npy' % (wdir)
-    yout = '%s/y.npy' % (wdir)
-    np.save(Xout, X)
-    np.save(Zout, Z)
-    np.save(yout, y)
-
-    # call out method.
-    cmd = list()
-    cmd.append('#!/bin/bash')
-    cmd.append('# PCQP')
-    cmd.append('')
-    cmd.append('# run it.')
-    tmp = list()
-    tmp.append('python')
-    tmp.append('/home/jrl03001/code/scdecon2/scdecon.py')
-    tmp.append('pcacon')
-    tmp.append('-X %s' % Xout)
-    tmp.append('-Z %s' % Zout)
-    tmp.append('-y %s' % yout)
-    tmp.append('-C %s' % C_path)
-    cmd.append(' '.join(tmp))
-    cmd.append('')
-    cmd.append('')
-
-    # open script file.
-    run_sh = '%s/run.sh' % (wdir)
-    with open(run_sh, "w") as fout:
-        fout.write('\n'.join(cmd))
-
-    # make executable and run.
-    subprocess.call(["chmod", "u+x", run_sh])
-    subprocess.call([run_sh])
-
-def _DECONF(X, Z, y, k, C_path, S_path, wdir, xtra=None):
-    """ deconvolution """
-
-    # identify non-null rows.
-    good_rows = list()
-    for i in range(X.shape[0]):
-        if np.sum(X[i,:]) > 0.0:
-            good_rows.append(i)
-    X = X[good_rows,:]
-
-    # serialize stuff to matrix.
-    tmp_mat = '%s/mat.dat' % wdir
-    with open(tmp_mat, "wb") as fout:
-        fout.write('\t'.join(['sample_%i' % i for i in range(X.shape[1])]) + '\n')
-        for i in range(X.shape[0]):
-            fout.write('gene_%i\t' % i + '\t'.join(['%f' % v for v in X[i,:]]) + '\n')
-
-    # run deconvolution.
-    txt = '''# load libraries.
-suppressMessages(library(CellMix));
-suppressMessages(library(GEOquery));
-
-# load data.
-exprsFile <- file.path("{path}", "mat.dat");
-exprs <- as.matrix(read.table(exprsFile, header=TRUE, sep="\\t", row.names=1, as.is=TRUE));
-eset <- ExpressionSet(assayData=exprs);
-
-# run deconvolution.
-res <- ged(eset, {num}, method='deconf');
-
-# write matrix.
-write.table(coef(res), file="{path}/C.txt", row.names=FALSE, col.names=FALSE)
-write.table(basis(res), file="{path}/S.txt", row.names=FALSE, col.names=FALSE)
-'''.format(path=wdir, num=k)
-
-    # run it in R.
-    out = _run_it_R(wdir, txt, X.shape[1], X.shape[0], k)
-
-    # skip if bad.
-    if out == None:
-        return
-    S, C = out
-
-    # write it.
-    np.save(C_path, C)
-    np.save(S_path, S)
-
-
-def _QPROG(X, Z, y, k, C_path, S_path, wdir, xtra=None):
-    """ deconvolution """
-
-    # compute S.
-    S = _avg_S(y, Z)
-
-    # identify non-null rows.
-    good_rows = list()
-    for i in range(S.shape[0]):
-        if np.sum(S[i,:]) > 0.0:
-            good_rows.append(i)
-    S = S[good_rows,:]
-
-    # serialize stuff to matrix.
-    tmp_mat = '%s/S.dat' % wdir
-    with open(tmp_mat, "wb") as fout:
-        fout.write('\t'.join(['sample_%i' % i for i in range(S.shape[1])]) + '\n')
-        for i in range(S.shape[0]):
-            fout.write('gene_%i\t' % i + '\t'.join(['%f' % v for v in S[i,:]]) + '\n')
-
-    # identify non-null rows.
-    good_rows = list()
-    for i in range(X.shape[0]):
-        if np.sum(X[i,:]) > 0.0:
-            good_rows.append(i)
-    X = X[good_rows,:]
-
-    # serialize stuff to matrix.
-    tmp_mat = '%s/mat.dat' % wdir
-    with open(tmp_mat, "wb") as fout:
-        fout.write('\t'.join(['sample_%i' % i for i in range(X.shape[1])]) + '\n')
-        for i in range(X.shape[0]):
-            fout.write('gene_%i\t' % i + '\t'.join(['%f' % v for v in X[i,:]]) + '\n')
-
-    # create the R script.
-    txt = '''# load libraries.
-suppressMessages(library(CellMix));
-suppressMessages(library(GEOquery));
-
-# load data.
-sigFile <- file.path("{path}", "S.dat");
-S <- as.matrix(read.table(sigFile, header=TRUE, sep="\\t", row.names=1, as.is=TRUE));
-
-exprFile <- file.path("{path}", "mat.dat");
-X <- as.matrix(read.table(exprFile, header=TRUE, sep="\\t", row.names=1, as.is=TRUE));
-
-# run decon.
-res <- ged(X, S, method='qprog');
-
-# write matrix.
-write.table(coef(res), file="{path}/C.txt", row.names=FALSE, col.names=FALSE)
-write.table(basis(res), file="{path}/S.txt", row.names=FALSE, col.names=FALSE)
-'''.format(path=wdir)
-
-    # run it in R.
-    out = _run_it_R(wdir, txt, X.shape[1], X.shape[0], k)
-
-    # skip if bad.
-    if out == None:
-        return
-    S, C = out
-
-    # write it.
-    np.save(C_path, C)
-    np.save(S_path, S)
-
-
-def _DSA(X, Z, y, k, C_path, S_path, wdir, xtra=None):
-    """ deconvolution """
-
-    # write Z.
-    good_rows = list()
-    for i in range(Z.shape[0]):
-        if np.sum(Z[i,:]) > 0.0:
-            good_rows.append(i)
-    Z = Z[good_rows,:]
-
-    tmp_mat = '%s/Z.dat' % wdir
-    with open(tmp_mat, "wb") as fout:
-        fout.write('\t'.join(['sample_%i' % i for i in range(Z.shape[1])]) + '\n')
-        for i in range(Z.shape[0]):
-            fout.write('gene_%i\t' % i + '\t'.join(['%f' % v for v in Z[i,:]]) + '\n')
-
-    # write X.
-    good_rows = list()
-    for i in range(X.shape[0]):
-        if np.sum(X[i,:]) > 0.0:
-            good_rows.append(i)
-    X = X[good_rows,:]
-
-    tmp_mat = '%s/mat.dat' % wdir
-    with open(tmp_mat, "wb") as fout:
-        fout.write('\t'.join(['sample_%i' % i for i in range(X.shape[1])]) + '\n')
-        for i in range(X.shape[0]):
-            fout.write('gene_%i\t' % i + '\t'.join(['%f' % v for v in X[i,:]]) + '\n')
-
-    # simplify labels.
-    lbls = ','.join(['%i' % x for x in y])
-
-    # whut marker method.
-    if xtra != None:
-        if xtra not in set(['Abbas', 'maxcol', 'HSD']):
-            logging.error("bad xtra parameter")
-            sys.exit(1)
-        xm = xtra
-    else:
-        xm = 'Abbas'
-
-    # extract markers.
-    txt = '''# load libraries.
-suppressMessages(library(CellMix));
-suppressMessages(library(GEOquery));
-
-# load pure single-cells
-sigFile <- file.path("{path}", "Z.dat");
-Z <- as.matrix(read.table(sigFile, header=TRUE, sep="\\t", row.names=1, as.is=TRUE));
-Z <- Z + 1
-
-# labels
-y <- c({y});
-
-# perform extraction.
-sml <- extractMarkers(Z, data=y, method='{xm}')
-
-# load the mixture data.
-exprsFile <- file.path("{path}", "mat.dat");
-exprs <- as.matrix(read.table(exprsFile, header=TRUE, sep="\\t", row.names=1, as.is=TRUE));
-eset <- ExpressionSet(assayData=exprs);
-
-# perform deconvolution.
-res <- ged(eset, sml, 'DSA', verbose=TRUE)
-
-# write matrix.
-write.table(coef(res), file="{path}/C.txt", row.names=FALSE, col.names=FALSE)
-write.table(basis(res), file="{path}/S.txt", row.names=FALSE, col.names=FALSE)
-'''.format(path=wdir, y=lbls, xm=xm)
-
-    # run it in R.
-    out = _run_it_R(wdir, txt, X.shape[1], X.shape[0], k)
-
-    # skip if bad.
-    if out == None:
-        return
-    S, C = out
-
-    # write it.
-    np.save(C_path, C)
-    np.save(S_path, S)
-
-
-
-def _FROB(X, Z, y, k, C_path, S_path, wdir, xtra=None):
-    """ deconvolution """
-
-    # write Z.
-    good_rows = list()
-    for i in range(Z.shape[0]):
-        if np.sum(Z[i,:]) > 0.0:
-            good_rows.append(i)
-    Z = Z[good_rows,:]
-
-    tmp_mat = '%s/Z.dat' % wdir
-    with open(tmp_mat, "wb") as fout:
-        fout.write('\t'.join(['sample_%i' % i for i in range(Z.shape[1])]) + '\n')
-        for i in range(Z.shape[0]):
-            fout.write('gene_%i\t' % i + '\t'.join(['%f' % v for v in Z[i,:]]) + '\n')
-
-    # write X.
-    good_rows = list()
-    for i in range(X.shape[0]):
-        if np.sum(X[i,:]) > 0.0:
-            good_rows.append(i)
-    X = X[good_rows,:]
-
-    tmp_mat = '%s/mat.dat' % wdir
-    with open(tmp_mat, "wb") as fout:
-        fout.write('\t'.join(['sample_%i' % i for i in range(X.shape[1])]) + '\n')
-        for i in range(X.shape[0]):
-            fout.write('gene_%i\t' % i + '\t'.join(['%f' % v for v in X[i,:]]) + '\n')
-
-    # simplify labels.
-    lbls = ','.join(['%i' % x for x in y])
-
-
-    # whut marker method.
-    if xtra != None:
-        if xtra not in set(['Abbas', 'maxcol', 'HSD']):
-            logging.error("bad xtra parameter")
-            sys.exit(1)
-        xm = xtra
-    else:
-        xm = 'Abbas'
-
-    # extract markers.
-    txt = '''# load libraries.
-suppressMessages(library(CellMix));
-suppressMessages(library(GEOquery));
-
-# load pure single-cells
-sigFile <- file.path("{path}", "Z.dat");
-Z <- as.matrix(read.table(sigFile, header=TRUE, sep="\\t", row.names=1, as.is=TRUE));
-Z <- Z + 1
-
-# labels
-y <- c({y});
-
-# perform extraction.
-sml <- extractMarkers(Z, data=y, method='{xm}')
-
-# load the mixture data.
-exprsFile <- file.path("{path}", "mat.dat");
-exprs <- as.matrix(read.table(exprsFile, header=TRUE, sep="\\t", row.names=1, as.is=TRUE));
-eset <- ExpressionSet(assayData=exprs);
-
-# perform deconvolution.
-res <- ged(eset, sml, 'ssFrobenius')
-
-# write matrix.
-write.table(coef(res), file="{path}/C.txt", row.names=FALSE, col.names=FALSE)
-write.table(basis(res), file="{path}/S.txt", row.names=FALSE, col.names=FALSE)
-'''.format(path=wdir, y=lbls, xm=xm)
-
-    # run it in R.
-    out = _run_it_R(wdir, txt, X.shape[1], X.shape[0], k)
-
-    # skip if bad.
-    if out == None:
-        return
-    S, C = out
-
-    # write it.
-    np.save(C_path, C)
-    np.save(S_path, S)
-
-
-
-def _SSKL(X, Z, y, k, C_path, S_path, wdir, xtra=None):
-    """ deconvolution """
-
-    # write Z.
-    good_rows = list()
-    for i in range(Z.shape[0]):
-        if np.sum(Z[i,:]) > 0.0:
-            good_rows.append(i)
-    Z = Z[good_rows,:]
-
-    tmp_mat = '%s/Z.dat' % wdir
-    with open(tmp_mat, "wb") as fout:
-        fout.write('\t'.join(['sample_%i' % i for i in range(Z.shape[1])]) + '\n')
-        for i in range(Z.shape[0]):
-            fout.write('gene_%i\t' % i + '\t'.join(['%f' % v for v in Z[i,:]]) + '\n')
-
-    # write X.
-    good_rows = list()
-    for i in range(X.shape[0]):
-        if np.sum(X[i,:]) > 0.0:
-            good_rows.append(i)
-    X = X[good_rows,:]
-
-    tmp_mat = '%s/mat.dat' % wdir
-    with open(tmp_mat, "wb") as fout:
-        fout.write('\t'.join(['sample_%i' % i for i in range(X.shape[1])]) + '\n')
-        for i in range(X.shape[0]):
-            fout.write('gene_%i\t' % i + '\t'.join(['%f' % v for v in X[i,:]]) + '\n')
-
-    # simplify labels.
-    lbls = ','.join(['%i' % x for x in y])
-
-
-    # whut marker method.
-    if xtra != None:
-        if xtra not in set(['Abbas', 'maxcol', 'HSD']):
-            logging.error("bad xtra parameter")
-            sys.exit(1)
-        xm = xtra
-    else:
-        xm = 'Abbas'
-
-    # extract markers.
-    txt = '''# load libraries.
-suppressMessages(library(CellMix));
-suppressMessages(library(GEOquery));
-
-# load pure single-cells
-sigFile <- file.path("{path}", "Z.dat");
-Z <- as.matrix(read.table(sigFile, header=TRUE, sep="\\t", row.names=1, as.is=TRUE));
-Z <- Z + 1
-
-# labels
-y <- c({y});
-
-# perform extraction.
-sml <- extractMarkers(Z, data=y, method='{xm}')
-
-# load the mixture data.
-exprsFile <- file.path("{path}", "mat.dat");
-exprs <- as.matrix(read.table(exprsFile, header=TRUE, sep="\\t", row.names=1, as.is=TRUE));
-eset <- ExpressionSet(assayData=exprs);
-
-# perform deconvolution.
-res <- ged(eset, sml, 'ssKL')
-
-# write matrix.
-write.table(coef(res), file="{path}/C.txt", row.names=FALSE, col.names=FALSE)
-write.table(basis(res), file="{path}/S.txt", row.names=FALSE, col.names=FALSE)
-'''.format(path=wdir, y=lbls, xm=xm)
-
-    # run it in R.
-    out = _run_it_R(wdir, txt, X.shape[1], X.shape[0], k)
-
-    # skip if bad.
-    if out == None:
-        return
-    S, C = out
-
-    # write it.
-    np.save(C_path, C)
-    np.save(S_path, S)
-
-def _sim_gen(Xs, Zs, ys, method, work_dir):
-    """
-    generate test cases for process / review
-    """
-
-    # santiy.
-    assert len(Xs) == len(Zs) and len(Zs) == len(ys), 'bad setup'
-
-    # loop over each experiment.
-    for e in range(len(Xs)):
-
-        # get elements.
-        X = Xs[e]
-        Z = Zs[e]
-        y = ys[e]
-
-        # make paths.
-        wdir = '%s/%d/%s' % (work_dir, e, method)
-
-        # make common output file.
-        C_path = "%s/C.npy" % (wdir)
-        S_path = "%s/S.npy" % (wdir)
-
-        # yield it.
-        yield X, Z, y, wdir, C_path, S_path, e
-
-def _sim_C(n, m, k, c_type):
-
-    # simulate the concentrations.
-    C = np.zeros((k, n), dtype=np.float)
+    # build each sample.
     for j in range(n):
-        if c_type == 1:
+        if c_type == 0:
 
             # uniform.
             C[:,j] = 1.0 / float(k)
 
-        elif c_type == 2:
+        elif c_type == 1:
 
-            # arithmetic.
-            x = [float(x) for x in range(1,k+1)]
-            random.shuffle(x)
-            x = np.array(x)
-            x = x / np.sum(x)
-            C[:,j] = x
+            # random
+            C = np.random.rand(k, n)
+            for j in range(n):
+                C[:,j] = C[:,j] / np.sum(C[:,j])
 
         elif c_type == 3:
 
@@ -1073,13 +219,13 @@ def _sim_C(n, m, k, c_type):
             x = x / np.sum(x)
             C[:,j] = x
 
-        else:
-            logging.error("unknown C type")
-            sys.exit(1)
+    # round them to 3 decimals.
+    C = C.round(3)
 
+    # return the matrix.
     return C
 
-def _sim_X_sample(n, m, k, C, ilu, Xtmp):
+def _create_X(n, m, k, e, C, SAMPLES, ilu, klist):
 
     # sample from mixture to create X.
     X = np.zeros((m, n), dtype=np.float)
@@ -1087,781 +233,570 @@ def _sim_X_sample(n, m, k, C, ilu, Xtmp):
     # for each sample.
     for j in range(n):
 
-        # choose 100 from each cell type.
+        # choose e from each cell type.
         idxs = list()
-        for a in range(k):
+        for l in range(len(klist)):
 
             # compute count.
-            count = int(np.rint(w * C[a,j]) + 1)
+            count = int(np.rint(e * C[l,j]) + 1)
 
             # choose index.
-            idxs += list(np.random.choice(ilu[a], size = count))
+            idxs += list(np.random.choice(ilu[klist[l]], size = count))
 
         # build big slice.
-        bs = Xtmp[:,idxs]
+        bs = SAMPLES[:,idxs]
+
+        # reduce to active genes.
+        bs = bs[0:m,:]
 
         # assign average to sample.
         for i in range(m):
             X[i,j] = np.average(bs[i,:])
 
-    # return X.
+    # return X
     return X
 
-### public functions ###
+def _create_Z(t, SAMPLES, ilu, klist):
 
-def create_exp1(args):
-    """ creates S is calculated directly from average of SC """
+    # track columns and labels
+    cols = list()
+    lbls = list()
 
-    # load data.
-    SC = np.load(args.SC)
-    sc_lbls = np.load(args.sc_lbls)
-    c_lbls = np.load(args.c_lbls)
-    b_lbls = np.load(args.b_lbls)
+    # build them by cell-type.
+    for l in range(len(klist)):
 
-    # compute dimensions.
-    n = args.n
-    m = SC.shape[0]
-    k = c_lbls.shape[0]
-    l = SC.shape[1]
-    t = args.t
-    q = args.q
-    e = args.e
+        # choose index.
+        cols += list(np.random.choice(ilu[klist[l]], size = t))
 
-    # build the S simulation object.
-    if os.path.isfile(args.sim_obj) == False:
-        sim = SimSingleCell(SC, sc_lbls)
-        sim.save(args.sim_obj)
-    else:
-        sim = SimSingleCell(SC, sc_lbls, load=args.sim_obj)
+        # add to labels.
+        lbls += [l] * t
 
-    # loop over the number of experiments.
-    Xs = list()
-    Cs = list()
-    Ss = list()
-    Zs = list()
-    ys = list()
+    # take subset sample.
+    Z = SAMPLES[:,cols]
+    lbls = np.array(lbls)
 
-    # create master S.
-    S = _avg_S(sc_lbls, SC)
-
-    # loop over each experiment.
-    for gg in range(q):
-
-        # simulate the single-cells.
-        Z, y = sim.sample_1(t)
-
-        # create S-timate
-        H = _avg_S(y, Z)
-
-        # simulate the concentrations.
-        C = np.zeros((k, n), dtype=np.float)
-        for j in range(n):
-            if args.c_type == 1:
-
-                # uniform.
-                C[:,j] = 1.0 / float(k)
-
-            elif args.c_type == 2:
-
-                # arithmetic.
-                x = [float(x) for x in range(1,k+1)]
-                random.shuffle(x)
-                x = np.array(x)
-                x = x / np.sum(x)
-                C[:,j] = x
-
-            elif args.c_type == 3:
-
-                # geometric.
-                x = list(np.vander([k], k)[0])
-                random.shuffle(x)
-                x = [float(z) for z in x]
-                x = np.array(x)
-                x = x / np.sum(x)
-                C[:,j] = x
-
-            else:
-                logging.error("unknown C type")
-                sys.exit(1)
-
-        # compute mixtures directly from our model
-        X2 = np.dot(H, C)
-
-        # add noise.
-        N = _log_noise(X2.shape[0], X2.shape[1], e)
-        X2 = X2 * N
-
-        # save to list.
-        Xs.append(X2)
-        Cs.append(C)
-        #Ss.append(Snorm)
-        Ss.append(S)
-        Zs.append(Z)
-        ys.append(y)
-
-    # save experiment.
-    save_pickle(args.ref_file, {'Xs':Xs, 'Ss':Ss, 'Cs':Cs, 'Zs':Zs, 'ys':ys})
-    save_pickle(args.test_file, {'Xs':Xs, 'Zs':Zs, 'ys':ys})
-
-    # save simulated single-cells for plotting.
-    Z, y = sim.sample_1(50)
-    np.save('%s/Z.npy' % args.sim_dir, Z)
-    np.save('%s/z_lbls.npy' % args.sim_dir, y)
+    # return it
+    return Z, lbls
 
 
-def create_exp2(args):
-    """ creates S is calculated directly from average of SC """
-
-    # load data.
-    SC = np.load(args.SC)
-    sc_lbls = np.load(args.sc_lbls)
-    c_lbls = np.load(args.c_lbls)
-    b_lbls = np.load(args.b_lbls)
-
-    # compute dimensions.
-    n = args.n
-    m = SC.shape[0]
-    k = c_lbls.shape[0]
-    l = SC.shape[1]
-    t = args.t
-    q = args.q
-    e = args.e
-    g = args.g
-
-    # build the S simulation object.
-    if os.path.isfile(args.sim_obj) == False:
-        sim = SimSingleCell(SC, sc_lbls)
-        sim.save(args.sim_obj)
-    else:
-        sim = SimSingleCell(SC, sc_lbls, load=args.sim_obj)
-
-    # loop over the number of experiments.
-    Xs = list()
-    Cs = list()
-    Ss = list()
-    Zs = list()
-    ys = list()
-
-    # create master S.
-    S = _avg_S(sc_lbls, SC)
-
-    # loop over each experiment.
-    for gg in range(q):
-
-        # simulate the single-cells.
-        Z, y = sim.sample_1(t)
-
-        # create S-timate
-        H = _avg_S(y, Z)
-
-        # simulate the concentrations.
-        C = np.zeros((k, n), dtype=np.float)
-        for j in range(n):
-            if args.c_type == 1:
-
-                # uniform.
-                C[:,j] = 1.0 / float(k)
-
-            elif args.c_type == 2:
-
-                # arithmetic.
-                x = [float(x) for x in range(1,k+1)]
-                random.shuffle(x)
-                x = np.array(x)
-                x = x / np.sum(x)
-                C[:,j] = x
-
-            elif args.c_type == 3:
-
-                # geometric.
-                x = list(np.vander([k], k)[0])
-                random.shuffle(x)
-                x = [float(z) for z in x]
-                x = np.array(x)
-                x = x / np.sum(x)
-                C[:,j] = x
-
-            else:
-                logging.error("unknown C type")
-                sys.exit(1)
-
-        # compute mixtures directly from our model
-        X2 = np.dot(H, C)
-        print X2[0:5,0], X2[0:5,1]
-        # add noise.
-        N = _log_noise(X2.shape[0], X2.shape[1], e)
-        X2 = X2 * N
-
-        # get teh informative features.
-        if g != m:
-
-            # identify non-null rows.
-            good_rows = list()
-            for i in range(Z.shape[0]):
-                if np.sum(Z[i,:]) > 0.0:
-                    good_rows.append(i)
-            Z = Z[good_rows,:]
-
-            # anova feature selection.
-            clf = feature_selection.SelectKBest(score_func=feature_selection.f_classif, k=g)
-            clf.fit(np.transpose(Z), y)
-            features = np.where(clf.get_support() == True)[0]
-
-            # chop the genes down.
-            Z = Z[features,:]
-            X2 = X2[features,:]
+def _create_glist(g, Z, y):
 
 
+    # score them.
+    f, p = feature_selection.f_classif(Z, y)
 
-        #print Z[0,0], H[0,0], X2[0,0]
-        #print Z.shape, H.shape, X2.shape
+    # rank them
+    idx = np.argsort(f)[::-1]
 
-        # save to list.
-        Xs.append(X2)
-        Cs.append(C)
-        #Ss.append(Snorm)
-        Ss.append(S)
-        Zs.append(Z)
-        ys.append(y)
+    # skip nans.
+    tmp = list()
+    for i in range(len(idx)):
+        if np.isnan(f[idx[i]]) == False:
+            tmp.append(idx[i])
+    idx = np.array(tmp)
 
-    print "CHANGED??"
-    for X in Xs:
-        print X[0:5,0], X[0:5,1]
+    # return features.
+    return idx
 
-    ## DEBUG
-    Xfull = np.zeros((Xs[0].shape[0], Xs[0].shape[1]*len(Xs)), dtype=np.float)
-    Zfull = np.zeros((Zs[0].shape[0], Zs[0].shape[1]*len(Zs)), dtype=np.float)
-    yfull = np.zeros(ys[0].shape[0]*len(ys), dtype=np.int)
+def _run_UCQP(X_path, Z_path, y_path, k, S_path, C_path, wdir):
 
-    # loop over each experiment.
-    xj = 0
-    zj = 0
-    yi = 0
-    for  X, Z, y in zip(Xs, Zs, ys):
-        # copy into.
-        for j in range(X.shape[1]):
-            Xfull[:,xj] = X[:,j]
-            xj += 1
-        for j in range(Z.shape[1]):
-            Zfull[:,zj] = Z[:,j]
-            zj += 1
-        for i in range(y.shape[0]):
-            yfull[yi] = y[i]
-            yi += 1
+    # extend paths.
+    X_path = '%s.npy' % X_path
+    Z_path = '%s.npy' % Z_path
+    y_path = '%s.npy' % y_path
 
-    # write to txt.
-    with open("/home/jrl03001/figures/decon/exp3/X.csv", 'wb') as fout:
-        for i in range(Xfull.shape[0]):
-            fout.write(','.join(['%.3f' % x for x in Xfull[i,:]]) + '\n')
-    with open("/home/jrl03001/figures/decon/exp3/Z.csv", 'wb') as fout:
-        for i in range(Zfull.shape[0]):
-            fout.write(','.join(['%.3f' % x for x in Zfull[i,:]]) + '\n')
+    # set script file.
+    script_file = '%s/script.sh' % wdir
 
+    # call out method.
+    cmd = list()
+    cmd.append('#!/bin/bash')
+    cmd.append('# UCQP')
+    cmd.append('')
+    cmd.append('# run it.')
+    tmp = list()
+    tmp.append('python')
+    tmp.append('/home/jrl03001/code/scdecon2/scdecon.py')
+    tmp.append('decon')
+    tmp.append('-X %s' % X_path)
+    tmp.append('-Z %s' % Z_path)
+    tmp.append('-y %s' % y_path)
+    tmp.append('-k %i' % k)
+    tmp.append('-S %s' % S_path)
+    tmp.append('-C %s' % C_path)
+    cmd.append(' '.join(tmp))
+    cmd.append('')
+    cmd.append('')
 
-    # save experiment.
-    save_pickle(args.ref_file, {'Xs':Xs, 'Ss':Ss, 'Cs':Cs, 'Zs':Zs, 'ys':ys})
-    save_pickle(args.test_file, {'Xs':Xs, 'Zs':Zs, 'ys':ys})
+    # build string.
+    script_txt = '\n'.join(cmd)
 
-    # load it and print again.
-    data = load_pickle(args.test_file)
-    Xs = data['Xs']
+    # write it.
+    with open(script_file, "wb") as fout:
+        fout.write(script_txt)
 
-    print "HEY DOOD??"
-    for X in Xs:
-        print X[0:5,0], X[0:5,1]
+    # run it.
+    return subprocess.Popen(['sh', script_file], stderr=subprocess.STDOUT)
 
 
-def create_exp3(args):
-    """ creates S is calculated directly from average of SC """
+def _run_DECONF(X_path, Z_path, y_path, k, S_path, C_path, wdir):
+    """ deconvolution """
+
+    # extend paths.
+    X_path = '%s.txt' % X_path
+    Z_path = '%s.txt' % Z_path
+    R_script_file = '%s/script.R' % wdir
+    sh_script_file = '%s/script.sh' % wdir
+
+    Stmp = '%s/S.txt' % wdir
+    Ctmp = '%s/C.txt' % wdir
+
+    # need to load assignment.
+    #y = np.load('%s.npy' % y_path)
+
+    # run deconvolution.
+    txt = '''# load libraries.
+suppressMessages(library(CellMix));
+suppressMessages(library(GEOquery));
+
+# load data.
+exprsFile <- file.path("{X_path}");
+exprs <- as.matrix(read.table(exprsFile, header=TRUE, sep="\\t", row.names=1, as.is=TRUE));
+eset <- ExpressionSet(assayData=exprs);
+
+# run deconvolution.
+res <- ged(eset, {num}, method='deconf');
+
+# write matrix.
+write.table(coef(res), file="{Ctmp}", row.names=FALSE, col.names=FALSE)
+write.table(basis(res), file="{Stmp}", row.names=FALSE, col.names=FALSE)
+'''.format(X_path=X_path, Stmp=Stmp, Ctmp=Ctmp, num=k)
+
+    # write it.
+    with open(R_script_file, "wb") as fout:
+        fout.write(txt)
+
+    # create bash script to control it.
+    txt = '''#!/bin/bash
+# execute R script.
+Rscript {script}
+
+# translate matrix.
+python -c "exec(\\"import numpy as np\\nx=np.loadtxt('{Stmp}')\\nnp.save('{S_path}',x)\\")"
+'''.format(script=R_script_file, Stmp=Stmp, Ctmp=Ctmp, S_path=S_path, C_path=C_path)
+
+    # write it.
+    with open(sh_script_file, "wb") as fout:
+        fout.write(txt)
+
+    # run it.
+    return subprocess.Popen(['sh', sh_script_file], stderr=subprocess.STDOUT)
+
+def _evl_job(key, C_true, c_path, scorefns, scorenms):
+
+    # load the predicted concentrations.
+    C_pred = np.load(c_path)
+
+    # sanity check.
+    if C_pred.shape != C_true.shape:
+        return None
+
+    # flatten them both.
+    C_true = np.hstack(C_true.T)
+    C_pred = np.hstack(C_pred.T)
+
+    # compute average metric.
+    scores = list()
+    for scorefn, name in zip(scorefns, scorenms):
+
+
+        # score it column based average.
+        #if name in set(['rmse', 'pearson])
+        #s = np.average(np.array([scorefn(C_true[:,j], C_pred[:,j]) for j in range(C_true.shape[1])]))
+        s = scorefn(C_true, C_pred)
+
+        # sanity check.
+        if isinstance(s, float):
+            scores.append(s)
+
+    # return the score.
+    return key, scores
+
+### functions ###
+
+def create_exp(args):
+    ''' creates entire experiment '''
+
+    # setup directory.
+    sim_dir = os.path.abspath(args.sim_dir)
+    sim_obj = '%s/sim.cpickle' % sim_dir
+    mas_obj = '%s/mas.cpickle' % sim_dir
+    dep_obj = '%s/dep.cpickle' % sim_dir
 
     # load data.
     SC = np.load(args.SC)
     sc_lbls = np.load(args.sc_lbls)
-    c_lbls = np.load(args.c_lbls)
-    b_lbls = np.load(args.b_lbls)
+    kmax = len(np.unique(sc_lbls))
 
-    # compute dimensions.
-    n = args.n
-    m = SC.shape[0]
-    k = c_lbls.shape[0]
-    l = SC.shape[1]
-    t = args.t
-    q = args.q
-    g = args.g
-    w = args.w
-    e = args.e
+    # create gene list subset.
+    glist = _create_glist(SC.shape[0], np.transpose(SC), sc_lbls)
+
+    # always re-order SC.
+    SC = SC[glist, :]
 
     # build the S simulation object.
-    if os.path.isfile(args.sim_obj) == False:
+    if os.path.isfile(sim_obj) == False:
+        # create simulator.
         sim = SimSingleCell(SC, sc_lbls)
-        sim.save(args.sim_obj)
+        sim.save(sim_obj)
     else:
-        sim = SimSingleCell(SC, sc_lbls, load=args.sim_obj)
+        sim = SimSingleCell(SC, sc_lbls, load=sim_obj)
 
-    # loop over the number of experiments.
-    Xs = list()
-    Cs = list()
-    Ss = list()
-    Zs = list()
-    ys = list()
+    # build the master object.
+    if os.path.isfile(mas_obj) == False:
+        master = dict()
+    else:
+        master = load_pickle(mas_obj)
 
-    # create master S.
-    S = _avg_S(sc_lbls, SC)
+    # build the dependent object.
+    if os.path.isfile(dep_obj) == False:
+        dependent = dict()
+    else:
+        dependent = load_pickle(dep_obj)
+
+    # create variable iterators.
+    nmixs = np.arange(5, 55, 5)                             # mixtures
+    mgene = np.array([4, 8, 16, 24, 48, 96, 128, 256])      # genes
+    kcell = np.arange(3, 6, 1)                              # cell types
+    enois = np.arange(5, 125, 25)                           # samples in mixture
+    ctype = np.arange(3)                                    # concentration type.
+    qtrys = np.arange(0, 10, 1)                             # repitions
+
+    #nmixs = np.arange(5, 15, 5)                             # mixtures
+    #mgene = np.array([4, 48, 256])                          # genes
+    #kcell = np.arange(4, 6, 1)                              # cell types
+    #enois = np.arange(5, 125, 25)                           # samples in mixture
+    #ctype = np.arange(1)                                    # concentration type.
+    #qtrys = np.arange(0, 10, 1)                             # repitions
 
     # simulate the single-cells.
-    Xtmp, xy = sim.sample_1(1000)
+    SAMPLES, samp_y = sim.sample_1(10000)
+    SAMPLES.setflags(write=False)
+    samp_y.setflags(write=False)
 
     # make index lookup.
     ilu = dict()
-    for a in range(k):
-        ilu[a] = np.where(xy == a)[0]
+    for a in range(kmax):
+        ilu[a] = np.where(samp_y == a)[0]
 
-    # loop over each experiment.
-    for gg in range(q):
+    # build master S.
+    Smaster, cats = avg_cat(sc_lbls, np.transpose(SC))
+    Smaster.setflags(write=False)
+
+    # define mapping for cell-types less than given.
+    kmap = dict()
+    kmap[2] = [1,2]
+    kmap[3] = [1,2,3]
+    kmap[4] = [1,2,3,4]
+    kmap[5] = [0,1,2,3,4]
+
+    # create the master matrix.
+    m = mgene[-1]
+    for n, k, e, c, q in itertools.product(nmixs, kcell, enois, ctype, qtrys):
+
+        # master key.
+        key = (n, k, e, c, q)
+
+        # overwrite mode.
+        if key in master and args.overwrite == False:
+            continue
+
+        # note it.
+        logging.info("building: %i %i %i %i %i" % (n, k, e, c, q))
+
+        # fix number of single-cells to k * n
+        t = k * n
 
         # simulate the single-cells.
-        Z, y = sim.sample_1(t)
+        Z, y = _create_Z(t, SAMPLES, ilu, kmap[k])
 
-        # create S-timate
-        H = _avg_S(y, Z)
+        # create the signature.
+        H, hy = avg_cat(y, np.transpose(Z))
 
-        # simulate the concentrations.
-        C = np.zeros((k, n), dtype=np.float)
-        for j in range(n):
-            if args.c_type == 1:
+        # build the concentration
+        C = _create_C(n, k, c)
 
-                # uniform.
-                C[:,j] = 1.0 / float(k)
+        # create the mixture.
+        X = _create_X(n, m, k, e, C, SAMPLES, ilu, kmap[k])
 
-            elif args.c_type == 2:
+        # create experiment paths.
+        e_dir = '%s/master/%i_%i_%i_%i_%i' % (sim_dir, n, k, e, c, q)
 
-                # arithmetic.
-                x = [float(x) for x in range(1,k+1)]
-                random.shuffle(x)
-                x = np.array(x)
-                x = x / np.sum(x)
-                C[:,j] = x
+        # create the directory.
+        if os.path.isdir(e_dir) == False:
+            subprocess.call(["mkdir", "-p", e_dir])
 
-            elif args.c_type == 3:
+        # save them.
+        names = "ZyHCX"
+        matrs = [Z, y, H, C, X]
+        master[key] = dict()
+        for l, r in zip(names, matrs):
 
-                # geometric.
-                x = list(np.vander([k], k)[0])
-                random.shuffle(x)
-                x = [float(z) for z in x]
-                x = np.array(x)
-                x = x / np.sum(x)
-                C[:,j] = x
+            # create the base path.
+            l_path = "%s/%s" % (e_dir, l)
 
-            else:
-                logging.error("unknown C type")
-                sys.exit(1)
+            # save in numpy format.
+            np.save('%s.npy' % l_path, r)
 
-        # sample from mixture to create X.
-        X = np.zeros((m, n), dtype=np.float)
+            # save some in R format.
+            if l == "Z" or l == "X":
+                write_r_mat('%s.txt' % l_path, r)
 
-        # for each sample.
-        for j in range(n):
+            # save to the master key.
+            master[key][l] = l_path
 
-            # choose 100 from each cell type.
-            idxs = list()
-            for a in range(k):
+    # save the master.
+    save_pickle(mas_obj, master)
 
-                # compute count.
-                count = int(np.rint(w * C[a,j]) + 1)
+    # create the derivative combinations.
+    for n, k, e, c, q in itertools.product(nmixs, kcell, enois, ctype, qtrys):
 
-                # choose index.
-                idxs += list(np.random.choice(ilu[a], size = count))
+        # record it.
+        logging.info("loading: %i %i %i %i %i" % (n, k, e, c, q))
 
-            # build big slice.
-            bs = Xtmp[:,idxs]
+        # master key.
+        mkey = (n, k, e, c, q)
 
-            # assign average to sample.
-            for i in range(m):
-                X[i,j] = np.average(bs[i,:])
+        # load the master data.
+        Z = np.load('%s.npy' % master[mkey]['Z'])
+        y = np.load('%s.npy' % master[mkey]['y'])
+        H = np.load('%s.npy' % master[mkey]['H'])
+        C = np.load('%s.npy' % master[mkey]['C'])
+        X = np.load('%s.npy' % master[mkey]['X'])
 
-        # anova feature selection.
-        clf = feature_selection.SelectKBest(score_func=feature_selection.f_classif, k=g)
-        clf.fit(np.transpose(Z), y)
-        features = np.where(clf.get_support() == True)[0]
+        # no funny business.
+        for p in [Z, y, H, C, X]:
+            p.setflags(write=False)
 
-        # chop the genes down.
-        Z = Z[features,:]
-        X = X[features,:]
+        # loop over derivatives.
+        for m in mgene:
 
-        # add noise.
-        if e != None:
-            N = _log_noise(X.shape[0], X.shape[1], e)
-            X = X * N
+            # dependent key.
+            dkey = (n, k, e, c, q, m)
 
-        # save to list.
-        Xs.append(X)
-        Cs.append(C)
-        Ss.append(S)
-        Zs.append(Z)
-        ys.append(y)
+            # overwrite mode.
+            if dkey in dependent and args.overwrite == False:
+                continue
 
-    # save experiment.
-    save_pickle(args.ref_file, {'Xs':Xs, 'Ss':Ss, 'Cs':Cs, 'Zs':Zs, 'ys':ys})
-    save_pickle(args.test_file, {'Xs':Xs, 'Zs':Zs, 'ys':ys})
+            # note it.
+            logging.info("building: %i" % (m))
+
+            # create single-cell subset.
+            Xs = X[range(m),:]
+            Zs = Z[range(m),:]
+
+            # create experiment paths.
+            e_dir = '%s/dependent/%i_%i_%i_%i_%i/%i' % (sim_dir, n, k, e, c, q, m)
+
+            # create the directory.
+            if os.path.isdir(e_dir) == False:
+                subprocess.call(["mkdir", "-p", e_dir])
+
+            # save them.
+            names = "XZ"
+            matrs = [Xs, Zs]
+            dependent[dkey] = dict()
+            for l, r in zip(names, matrs):
+
+                # create the base path.
+                l_path = "%s/%s" % (e_dir, l)
+
+                # save in numpy format.
+                np.save('%s.npy' % l_path, r)
+
+                # save some in R format.
+                if l == "Z" or l == "X":
+                    write_r_mat('%s.txt' % l_path, r)
+
+                # save to the master key.
+                dependent[dkey][l] = l_path
+
+    # save the master.
+    save_pickle(mas_obj, master)
+    save_pickle(dep_obj, dependent)
 
 
-def create_exp4(args):
-    """ simulate a single missing cell type """
+def run_exp(args):
+    """ runs the experiment for a given method """
 
-    # load data.
-    SC = np.load(args.SC)
-    sc_lbls = np.load(args.sc_lbls)
-    c_lbls = np.load(args.c_lbls)
-    b_lbls = np.load(args.b_lbls)
+    # setup directory.
+    sim_dir = os.path.abspath(args.sim_dir)
+    mas_obj = '%s/mas.cpickle' % sim_dir
+    dep_obj = '%s/dep.cpickle' % sim_dir
+    res_obj = '%s/res.cpickle' % sim_dir
 
-    # compute dimensions.
-    n = args.n
-    m = SC.shape[0]
-    k = c_lbls.shape[0]
-    l = SC.shape[1]
-    t = args.t
-    q = args.q
-    g = args.g
-    w = args.w
-    e = args.e
-    r = args.r
+    # extract method info.
+    method_name, method_fn = args.method_sig
 
-    # build the S simulation object.
-    if os.path.isfile(args.sim_obj) == False:
-        sim = SimSingleCell(SC, sc_lbls)
-        sim.save(args.sim_obj)
+    # load the simulation data stuff.
+    master = load_pickle(mas_obj)
+    dependent = load_pickle(dep_obj)
+
+    # create results dictionary.
+    if os.path.isfile(res_obj) == False:
+        results = dict()
     else:
-        sim = SimSingleCell(SC, sc_lbls, load=args.sim_obj)
-
-    # loop over the number of experiments.
-    # basic data.
-    Xs = list() # mixture
-    Ss = list() # mixture
-    Cs = list() # concentrations
-    Zs = list() # samples single-cells
-    Hs = list() # signature from Z
-    ys = list() # labels of Zs
-    fs = list() # features used
-    mjs = list()  # missing cell type index.
-
-    # sampled data.
-    XGs = list() # mixtures with genes removed.
-    ZGs = list() # single-cells with genes removed
-
-    # missing.
-    ZMs = list() # single-cell with missing cell-type removed
-    yms = list() # labels with missing cell-type removed
-
-    # create master S.
-    S = _avg_S(sc_lbls, SC)
-
-    # simulate the single-cells.
-    Xtmp, xy = sim.sample_1(1000)
-
-    # make index lookup.
-    ilu = dict()
-    for a in range(k):
-        ilu[a] = np.where(xy == a)[0]
-
-    # loop over each experiment.
-    for gg in range(q):
-
-        # simulate the single-cells.
-        Z, y = sim.sample_1(t)
-
-        # create S-timate
-        H = _avg_S(y, Z)
-
-        # simulate C.
-        C = _sim_C(n, m, k, args.c_type)
-
-        # simulate X.
-        #X = _sim_X_sample(n, m, k, C, ilu, Xtmp)
-        X = np.dot(H, C)
-
-        # add noise.
-        if e != None:
-            N = _log_noise(X.shape[0], X.shape[1], e)
-            X = X * N
-
-        # anova feature selection.
-        clf = feature_selection.SelectKBest(score_func=feature_selection.f_classif, k=g)
-        clf.fit(np.transpose(Z), y)
-        features = np.where(clf.get_support() == True)[0]
-        features.sort()
-
-        # chop the genes down.
-        XG = X[features,:]
-        ZG = Z[features,:]
-
-        # remove cell type.
-        yidx = np.where(y != r)[0]
-        ytmp = y[yidx]
-        Ztmp = ZG[:, yidx]
-
-        # renumber stuff.
-        for ll in range(r+1, k):
-            ytmp[np.where(ytmp == ll)[0]] -= 1
-
-        # save basic to list.
-        Xs.append(X)
-        Ss.append(S)
-        Cs.append(C)
-        Zs.append(Z)
-        Hs.append(H)
-        ys.append(y)
-        fs.append(features)
-        mjs.append(r)
-
-        # sampled data.
-        XGs.append(XG)
-        ZGs.append(ZG)
-
-        # missing.
-        ZMs.append(Ztmp)
-        yms.append(ytmp)
-
-    # dont save.
-    if args.debug == True:
-        return
-
-    # save experiment.
-    save_pickle(args.ref_file, {'Xs':Xs, 'Ss':Ss, 'Cs':Cs, 'Zs':Zs, 'ZGs':ZGs, 'Hs':Hs, 'ys':ys, 'fs':fs, 'mjs':mjs})
-    save_pickle(args.test_file, {'XGs':XGs, 'ZMs':ZMs, 'yms':yms})
-
-
-def run_sim(args):
-    """ runs the simulation """
-
-    # load testing data.
-    data = load_pickle(args.test_file)
-    Xs = data['Xs']
-    Zs = data['Zs']
-    ys = data['ys']
-    k = args.k
-
-    # method name
-    method = args.method
-
-    # loop over each experiment.
-    for  X, Z, y, wdir, C_path, S_path, idx in _sim_gen(Xs, Zs, ys, method, args.work_dir):
-
-        # check for skippability.
-        if os.path.isfile('%s/C.npy' % wdir):
-            continue
-
-        # make directory.
-        if os.path.isdir(wdir) == False:
-            subprocess.call(['mkdir','-p',wdir])
-
-        # make args list.
-        alist = (X, Z, y, k, C_path, S_path, wdir)
-
-        # method switch.
-        if method == "UCQP":
-            _UCQP(*alist, xtra=args.xtra_args)
-        elif method == "UCQPM":
-            _UCQPM(*alist, xtra=args.xtra_args)
-        elif method == "QPROG":
-            _QPROG(*alist, xtra=args.xtra_args)
-        elif method == "DECONF":
-            _DECONF(*alist, xtra=args.xtra_args)
-        elif method == "DSA":
-            _DSA(*alist, xtra=args.xtra_args)
-        elif method == "FROB":
-            _FROB(*alist, xtra=args.xtra_args)
-        elif method == "SSKL":
-            _SSKL(*alist, xtra=args.xtra_args)
-        else:
-            logging.error("unknown method: %s" % method)
-            sys.exit(1)
-
-def run_sim_missing(args):
-    """ runs the simulation for missing data. setup to
-    allow cheating"""
-
-    # load testing data.
-    data = load_pickle(args.test_file)
-    ref = load_pickle(args.ref_file)
-    XGs = data['XGs']
-    ZMs = data['ZMs']
-    yms = data['yms']
-    k = args.k
-
-    Ss_cheat = ref['Ss']
-    Hs_cheat = ref['Hs']
-    Cs_cheat = ref['Cs']
-    fs_cheat = ref['fs']
-
-    # method name
-    method = args.method
-
-    # loop over each experiment.
-    for  X, Z, y, wdir, C_path, S_path, idx in _sim_gen(XGs, ZMs, yms, method, args.work_dir):
-
-        # check for skippability.
-        if os.path.isfile('%s/C.npy' % wdir):
-            logging.info("skipping: %s" % '%s/C.npy' % wdir)
-            continue
-
-        # make directory.
-        if os.path.isdir(wdir) == False:
-            subprocess.call(['mkdir','-p',wdir])
-
-        # cheat for UCQPC
-        if method == "UCQPC":
-
-            # get cheat elements.
-            Z = ref['ZGs'][idx]
-            y = ref['ys'][idx]
-
-        # make args list.
-        alist = (X, Z, y, k, C_path, S_path, wdir)
-
-        # method switch.
-        if method == "UCQPC":
-            _UCQP(*alist, xtra=args.xtra_args)
-        elif method == "UCQPM":
-            _UCQPM(*alist, xtra={'S':Ss_cheat[idx], 'C':Cs_cheat[idx], 'H':Hs_cheat[idx], 'fs':fs_cheat[idx]})
-        elif method == "DECONF":
-            _DECONF(*alist, xtra=args.xtra_args)
-        elif method == "RAND":
-            _RAND(*alist, xtra=args.xtra_args)
-        else:
-            logging.error("unknown method: %s" % method)
-            sys.exit(1)
-
-
-def evl_sim(args):
-    """ runs the simulation """
-
-    # load data.
-    test = load_pickle(args.test_file)
-    ref = load_pickle(args.ref_file)
-
-    # simplify.
-    n = ref['Xs'][0].shape[1]
-    m = ref['Xs'][0].shape[0]
-    k = ref['Ss'][0].shape[1]
-    q = len(ref['Xs'])
-    method = args.method
-    scorem = args.scorem
-
-    # setup testers.
-    if args.missing == False:
-        Xs = test['Xs']
-        Zs = test['Zs']
-        ys = test['ys']
-    else:
-        Xs = test['XGs']
-        Zs = test['ZMs']
-        ys = test['yms']
-
-    # loop over each experiment.
-    for  X_test, Z_test, y_test, wdir, C_path, S_path, idx in _sim_gen(Xs, Zs, ys, method, args.work_dir):
-
-        # get elements.
-        S_ref = ref['Ss'][idx]
-        X_ref = ref['Xs'][idx]
-        Z_ref = ref['Zs'][idx]
-        H_ref = ref['Hs'][idx]
-        C_ref = ref['Cs'][idx]
-        y_ref = ref['ys'][idx]
-        features = ref['fs'][idx]
-
-        # shrink things appropriatly.
-        H_ref = H_ref[features,:]
-
-        # load the test matrix.
-        if os.path.isfile(C_path):
-            C_test = np.load(C_path)
-        else:
-            # silenty skip missing.
-            continue
-
-        # load the test matrix.
-        if os.path.isfile(S_path):
-            S_test = np.load(S_path)
-        else:
-            # silenty skip missing.
-            continue
-
-        # round to 5 decimals.
-        C_ref = np.round(C_ref, decimals=5)
-        C_test = np.round(C_test, decimals=5)
-
-        # missing.
-        if args.missing == True:
-
-            # grab missing specific.
-            mj = ref['mjs'][idx]
-
-            # insert new one.
-            if args.method == "UCQPM":
-
-                # remap the row order for C
-                Ctmp = C_test.copy()
-                C_test[mj, :] = Ctmp[-1,:]
-                for l in range(mj+1, k):
-                    C_test[l, :] = Ctmp[l-1, :]
-
-                # remap the column order for H/S
-                Stmp = S_test.copy()
-                S_test[:, mj] = S_test[:,-1]
-                for l in range(mj+1, k):
-                    S_test[:, l] = Stmp[:, l-1]
-
-            elif args.method == "DECONF":
-
-                # find ordering by matching and pearson correlation.
-                order = match_signatures(H_ref, S_test)
-
-                # rorder S and C
-                S_test = S_test[:,order]
-                C_test = C_test[order,:]
-
-            elif args.method == "UCQPC":
-                pass
-
-            else:
-                raise NotImplementedError
-
-        # set the scoring function.
-        if scorem == 'rmse':
-            metric = rmse_vector
-        elif scorem == 'pearson':
-            metric = pearson_vector
-        elif scorem == 'nrmse':
-            metric = nrmse_vector
-        elif scorem == 'meanabs':
-            metric = meanabs_vector
-        elif scorem == 'maxabs':
-            metric = maxabs_vector
-        else:
-            logging.error("unknown score method")
-            sys.exit()
-
-        # compute column wise average.
-        vals = list()
-        for j in range(C_ref.shape[1]):
-            v = metric(C_ref[:,j], C_test[:,j])
-            vals.append(v)
-        total = np.average(np.array(vals))
-
-        # compute cell type scores.
-        scores = [total]
-        for i in range(C_ref.shape[0]):
-            scores.append(metric(C_ref[i,:], C_test[i,:]))
-
-        # compute missing signature score.
-        if args.missing == True or args.ucqpc == True:
-            s_score = metric(H_ref[:, mj], S_test[:, mj])
-            txt = ' '.join(['%.5f' % x for x in [s_score] + scores])
-        else:
-            # print the results.
-            txt = ' '.join(['%.5f' % x for x in [s_score] + scores])
-
-        print txt
+        results = load_pickle(res_obj)
+
+    # track progress.
+    total = len(dependent.keys())
+
+    # load R libraries.
+    load_R_libraries()
+
+    # create the pool.
+    pool = Pool(processes = args.num_cpu)
+
+        # add jobs.
+        ares = list()
+        for n, m, k in its:
+            ares.append(pool.apply_async(fn, (n, m, k), dict(verbose=verbose)))
+
+        # close and get results.
+        pool.close()
+        pool.join()
+
+        # get results.
+        jobs = [a.get() for a in ares]
+
+    # loop over each dependent.
+    active = list()
+    cnt = 0
+    for dkey in dependent:
+
+        # check if we can skip.
+        if dkey in results and method_name in results[dkey]:
+            if os.path.isfile(results[dkey][method_name]["S"]) and os.path.isfile(results[dkey][method_name]["C"]):
+                continue
+
+        # simplify.
+        n, k, e, c, q, m = dkey
+
+        # infer master key.
+        mkey = (n, k, e, c, q)
+
+        # extract paths.
+        Z_path = dependent[dkey]['Z']
+        X_path = dependent[dkey]['X']
+        y_path = master[mkey]['y']
+
+        # make a working directory.
+        w_dir = '%s/working/%s/%i_%i_%i_%i_%i/%i' % (sim_dir, method_name, n, k, e, c, q, m)
+        S_path = '%s/S.npy' % w_dir
+        C_path = '%s/C.npy' % w_dir
+
+        # create the working directory.
+        if os.path.isdir(w_dir) == False:
+            subprocess.call(['mkdir', '-p', w_dir])
+
+        # spin-wheel.
+        while len(active) >= args.num_cpu:
+            tmp = list()
+            for p in active:
+                if p.poll() == None:
+                    tmp.append(p)
+                else:
+                    p.wait()
+                    del p
+            active = tmp
+            time.sleep(.001)
+
+        # call run method, return process.
+        logging.info("running: %i of %i: %s %i_%i_%i_%i_%i %i" % (cnt, total, method_name, n, k, e, c, q, m))
+        #p = method_fn(X_path, Z_path, y_path, k, S_path, C_path, w_dir)
+        cnt += 1
+
+        # add to results.
+        if dkey not in results:
+            results[dkey] = dict()
+        results[dkey][method_name] = {"S":S_path, "C":C_path}
+
+        # add it to queue.
+        active.append(p)
+
+    # save the results.
+    save_pickle(res_obj, results)
+
+
+def evl_exp(args):
+    """ evaluates the experiment for a given method """
+
+    # setup directory.
+    sim_dir = os.path.abspath(args.sim_dir)
+    mas_obj = '%s/mas.cpickle' % sim_dir
+    dep_obj = '%s/dep.cpickle' % sim_dir
+    res_obj = '%s/res.cpickle' % sim_dir
+
+    # extract method info.
+    method_name, method_fn = args.method_sig
+
+    # load the simulation data stuff.
+    master = load_pickle(mas_obj)
+    dependent = load_pickle(dep_obj)
+    results = load_pickle(res_obj)
+
+    # track progress.
+    total = len(dependent.keys())
+
+    # sort the keys.
+    keys = sorted(results.keys(), key=operator.itemgetter(0,1,2,3,4,5))
+
+    # define the score functions.
+    scorefns = [meanabs_vector, rmse_vector, pearson_vector, rsquare_vector, meanrel_vector]
+    scorenms = ["meanabs", "rmse", "pearson", "r^2", "meanrel"]
+
+    # loop over each dependent.
+    pkey = ""
+    output = list()
+    for dkey in keys:
+
+        # expand the key.
+        n, k, e, c, q, m = dkey
+        mkey = (n, k, e, c, q)
+        skey = n, k, e, c, m        # remove reference ot repeat variable
+
+        # load the true concentrations.
+        if mkey != pkey:
+            C_true = np.load('%s.npy' % master[mkey]['C'])
+
+        # score it.
+        output.append(_evl_job(skey, C_true, results[dkey]['C'], scorefns, scorenms))
+
+    # compress by key
+    compressed = dict()
+    for key, scores in output:
+
+        # boot the key.
+        if key not in compressed:
+            compressed[key] = dict()
+
+        # loop over each score.
+        for s, name in zip(scores, scorenms):
+
+            # boot the scores.
+            if name not in compressed[key]:
+                compressed[key][name] = list()
+
+            # add it.
+            compressed[key][name].append(s)
+
+    # sort, average and print.
+    keys = sorted(compressed.keys(), key=operator.itemgetter(0,1,2,3,4))
+    for key in keys:
+        for name in scorenms:
+            txt = '%i,%i,%i,%i,%i' % key
+            txt = '%s,%s,%.5f' % (txt, name, np.average(np.array(compressed[key][name])))
+            print txt
 
 ### script ###
 
@@ -1871,205 +806,47 @@ if __name__ == '__main__':
     main_p = argparse.ArgumentParser()
     subp = main_p.add_subparsers(help='sub-command help')
 
-    ## load data from sources ##
-    # mmc3_figure1b
-    subpp = subp.add_parser('mmc3_figure1b', help='import example data')
-    subpp.add_argument('-SC', dest='SC', required=True, help='path for matrix')
-    subpp.add_argument('-sc_lbls', dest='sc_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-c_lbls', dest='c_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-b_lbls', dest='b_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-d', dest='input_file', required=True, help='input file')
-    subpp.add_argument('-g', dest='guoji', action='store_true', default=False, help='guoji 9')
-    subpp.set_defaults(func=load_mmc3_figure1b)
-
     ## create simulations ##
-    # basic experiment.
-    subpp = subp.add_parser('create_exp1', help='creates experiment 1 data')
-    subpp.add_argument('-SC', dest='SC', required=True, help='path for matrix')
-    subpp.add_argument('-sc_lbls', dest='sc_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-c_lbls', dest='c_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-b_lbls', dest='b_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-n', type=int, dest='n', required=True, help='number of mixed samples')
-    subpp.add_argument('-q', type=int, dest='q', required=True, help='number of experiments')
-    subpp.add_argument('-t', type=int, dest='t', required=True, help='number of single-cells')
-    subpp.add_argument('-c', type=int, dest='c_type', required=True, help='concentration type')
-    subpp.add_argument('-e', type=float, dest='e', required=True, help='error parameter: 0.0 - 0.05')
-    subpp.add_argument('-so', dest='sim_obj', required=True, help='simulation object')
-    subpp.add_argument('-rd', dest='ref_file', required=True, help='serialized experiment file')
-    subpp.add_argument('-td', dest='test_file', required=True, help='serialized experiment file')
+
+    # comprehensive simulation
+    subpp = subp.add_parser('create_exp', help='creates experiment data')
     subpp.add_argument('-sd', dest='sim_dir', required=True, help='simulation directory for validation')
-    subpp.set_defaults(func=create_exp1)
-
-    # vary the gene.
-    subpp = subp.add_parser('create_exp2', help='creates experiment 1 data')
     subpp.add_argument('-SC', dest='SC', required=True, help='path for matrix')
     subpp.add_argument('-sc_lbls', dest='sc_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-c_lbls', dest='c_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-b_lbls', dest='b_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-n', type=int, dest='n', required=True, help='number of mixed samples')
-    subpp.add_argument('-q', type=int, dest='q', required=True, help='number of experiments')
-    subpp.add_argument('-t', type=int, dest='t', required=True, help='number of single-cells')
-    subpp.add_argument('-c', type=int, dest='c_type', required=True, help='concentration type')
-    subpp.add_argument('-e', type=float, dest='e', required=True, help='error parameter: 0.0 - 0.05')
-    subpp.add_argument('-g', type=float, dest='g', required=True, help='number of genes to use')
-    subpp.add_argument('-so', dest='sim_obj', required=True, help='simulation object')
-    subpp.add_argument('-rd', dest='ref_file', required=True, help='serialized experiment file')
-    subpp.add_argument('-td', dest='test_file', required=True, help='serialized experiment file')
+    subpp.add_argument('-o', dest='overwrite', action='store_true', help='overwrite existing, otherwise will only add new')
+    subpp.set_defaults(func=create_exp)
+
+    ## run the experiment ##
+
+    # comprehensive simulation
+    subpp = subp.add_parser('run_exp', help='creates experiment data')
     subpp.add_argument('-sd', dest='sim_dir', required=True, help='simulation directory for validation')
-    subpp.set_defaults(func=create_exp2)
+    subpp.add_argument('-p', type=int, dest='num_cpu', required=True, help='number of processors to use')
+    me_g = subpp.add_mutually_exclusive_group(required=True)
+    me_g.add_argument('-UCQP', dest='method_sig', action='store_const', const=('UCQP', _run_UCQP), help='UCQP')
+    #me_g.add_argument('-DECONF', dest='method_sig', action='store_const', const=('DECONF', _run_DECONF), help='DECONF')
+    me_g.add_argument('-DECONF', dest='method_sig', action='store_const', const=('DECONF', R_DECONF), help='DECONF')
+    subpp.set_defaults(func=run_exp)
 
-    # vary gene and sample mixtures directly.
-    subpp = subp.add_parser('create_exp3', help='creates experiment 3 data')
-    subpp.add_argument('-SC', dest='SC', required=True, help='path for matrix')
-    subpp.add_argument('-sc_lbls', dest='sc_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-c_lbls', dest='c_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-b_lbls', dest='b_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-n', type=int, dest='n', required=True, help='number of mixed samples')
-    subpp.add_argument('-q', type=int, dest='q', required=True, help='number of experiments')
-    subpp.add_argument('-t', type=int, dest='t', required=True, help='number of single-cells')
-    subpp.add_argument('-c', type=int, dest='c_type', required=True, help='concentration type')
-    subpp.add_argument('-w', type=float, dest='w', required=True, help='error parameter: 1 - 1000')
-    subpp.add_argument('-e', type=float, dest='e', required=True, help='noise parameter: 0.0 - 0.05')
-    subpp.add_argument('-g', type=float, dest='g', required=True, help='number of genes to use')
-    subpp.add_argument('-so', dest='sim_obj', required=True, help='simulation object')
-    subpp.add_argument('-rd', dest='ref_file', required=True, help='serialized experiment file')
-    subpp.add_argument('-td', dest='test_file', required=True, help='serialized experiment file')
+    ## evaluate the results ##
+
+    # comprehensive simulation
+    subpp = subp.add_parser('evl_exp', help='evaluates experiment results')
     subpp.add_argument('-sd', dest='sim_dir', required=True, help='simulation directory for validation')
-    subpp.set_defaults(func=create_exp3)
+    subpp.add_argument('-p', type=int, dest='num_cpu', required=True, help='number of processors to use')
+    me_g = subpp.add_mutually_exclusive_group(required=True)
+    me_g.add_argument('-UCQP', dest='method_sig', action='store_const', const=('UCQP', _run_UCQP), help='UCQP')
+    subpp.set_defaults(func=evl_exp)
 
-    subpp = subp.add_parser('create_exp4', help='creates missing data experiment: 4')
-    subpp.add_argument('-SC', dest='SC', required=True, help='path for matrix')
-    subpp.add_argument('-sc_lbls', dest='sc_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-c_lbls', dest='c_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-b_lbls', dest='b_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-n', type=int, dest='n', required=True, help='number of mixed samples')
-    subpp.add_argument('-q', type=int, dest='q', required=True, help='number of experiments')
-    subpp.add_argument('-t', type=int, dest='t', required=True, help='number of single-cells')
-    subpp.add_argument('-r', type=int, dest='r', required=True, help='cell-type to exclude')
-    subpp.add_argument('-c', type=int, dest='c_type', required=True, help='concentration type')
-    subpp.add_argument('-w', type=float, dest='w', required=True, help='error parameter: 1 - 1000')
-    subpp.add_argument('-e', type=float, dest='e', required=True, help='noise parameter: 0.0 - 0.05')
-    subpp.add_argument('-g', type=float, dest='g', required=True, help='number of genes to use')
-    subpp.add_argument('-so', dest='sim_obj', required=True, help='simulation object')
-    subpp.add_argument('-rd', dest='ref_file', required=True, help='serialized experiment file')
-    subpp.add_argument('-td', dest='test_file', required=True, help='serialized experiment file')
-    subpp.add_argument('-sd', dest='sim_dir', required=True, help='simulation directory for validation')
-    subpp.add_argument('-debug', dest='debug', action='store_true', help='debug mode: for developer')
-    subpp.set_defaults(func=create_exp4)
+    ## plotting ##
 
-
-    ## run simulations ##
-    subpp = subp.add_parser('run_sim', help='run simulation 3')
-    subpp.add_argument('-td', dest='test_file', required=True, help='the test file')
-    subpp.add_argument('-wd', dest='work_dir', required=True, help='working directory for temporary files')
-    subpp.add_argument('-k', dest='k', required=True, type=int, help='number of cell types')
-    subpp.add_argument('-m', dest='method', required=True, help='method to test')
-    subpp.add_argument('-x', dest='xtra_args', help='optional arguments: comma sep list')
-    subpp.set_defaults(func=run_sim)
-
-    subpp = subp.add_parser('run_sim_missing', help='run simulation with missing data')
-    subpp.add_argument('-td', dest='test_file', required=True, help='the test file')
-    subpp.add_argument('-rd', dest='ref_file', required=True, help='serialized experiment file')
-    subpp.add_argument('-wd', dest='work_dir', required=True, help='working directory for temporary files')
-    subpp.add_argument('-k', dest='k', required=True, type=int, help='number of cell types')
-    subpp.add_argument('-m', dest='method', required=True, help='method to test')
-    subpp.add_argument('-x', dest='xtra_args', help='optional arguments: comma sep list')
-    subpp.set_defaults(func=run_sim_missing)
-
-    ## evaluate simulations ##
-    subpp = subp.add_parser('evl_sim', help='evaluate simulation')
-    subpp.add_argument('-tf', dest='test_file', required=True, help='the test file')
-    subpp.add_argument('-rf', dest='ref_file', required=True, help='the reference file')
-    subpp.add_argument('-wd', dest='work_dir', required=True, help='working directory for simulation')
-    subpp.add_argument('-m', dest='method', required=True, help='method to test')
-    subpp.add_argument('-s', dest='scorem', required=True, help='metric to use')
-    #subpp.add_argument('-out', dest='out_file', required=True, help='output file')
-    subpp.add_argument('-missing', dest='missing', action='store_true', help='adds missing signature info')
-    subpp.set_defaults(func=evl_sim)
-
-    ## testing and random stuff ##
-    subpp = subp.add_parser('plot_sim', help='plot X and Z values')
-    subpp.add_argument('-td', dest='test_file', required=True, help='the test file')
-    subpp.add_argument('-wd', dest='work_dir', required=True, help='working directory for temporary files')
-    subpp.add_argument('-k', dest='k', required=True, type=int, help='number of cell types')
-    subpp.add_argument('-fig', dest='fig_file', type=str, required=True, help='figure file')
-    subpp.set_defaults(func=plot_sim)
-
-    subpp = subp.add_parser('compare_cluster_avg', help='visualizes kmeans')
-    subpp.add_argument('-SC', dest='SC', required=True, help='path for matrix')
-    subpp.add_argument('-sc_lbls', dest='sc_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-k', type=int, dest='k', required=True, help='number of clusters')
-    subpp.set_defaults(func=compare_cluster_avg)
-
-    subpp = subp.add_parser('compare_cluster_sample', help='visualizes kmeans')
-    subpp.add_argument('-SC', dest='SC', required=True, help='path for matrix')
-    subpp.add_argument('-sc_lbls', dest='sc_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-k', type=int, dest='k', required=True, help='number of clusters')
-    subpp.set_defaults(func=compare_cluster_sample)
-
-    subpp = subp.add_parser('plot_gene', help='plots single cell values')
-    subpp.add_argument('-SC', dest='SC', required=True, help='path for matrix')
-    subpp.add_argument('-sc_lbls', dest='sc_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-b_lbls', dest='b_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-c_lbls', dest='c_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-g', dest='gene_name', type=str, required=True, help='gene name')
-    subpp.add_argument('-fdir', dest='fig_dir', type=str, required=True, help='figure directory')
-    subpp.set_defaults(func=plot_gene)
-
-    subpp = subp.add_parser('plot_singlecell', help='plots true/predicted concentrations')
-    subpp.add_argument('-d', dest='base_dir', type=str, required=True, help='base directory')
-    subpp.add_argument('-mlist', dest='mlist', type=str, required=True, help='methods')
-    subpp.add_argument('-c', dest='c', type=int, required=True, help='concentration')
-    subpp.add_argument('-q', dest='q', type=int, required=True, help='q')
-    subpp.add_argument('-e', dest='e', type=int, required=True, help='e')
-    subpp.add_argument('-tlist', dest='tlist', type=str, required=True, help='t')
-    subpp.add_argument('-g', dest='g', type=int, required=True, help='g')
-    subpp.set_defaults(func=plot_singlecell)
-
-    subpp = subp.add_parser('plot_varygene', help='plots as a function of # genes')
-    subpp.add_argument('-d', dest='base_dir', type=str, required=True, help='base directory')
-    subpp.add_argument('-mlist', dest='mlist', type=str, required=True, help='methods')
-    subpp.add_argument('-c', dest='c', type=int, required=True, help='concentration')
-    subpp.add_argument('-q', dest='q', type=int, required=True, help='q')
-    subpp.add_argument('-e', dest='e', type=int, required=True, help='e')
-    subpp.add_argument('-glist', dest='glist', type=str, required=True, help='g')
-    subpp.add_argument('-t', dest='t', type=int, required=True, help='t')
-    subpp.set_defaults(func=plot_varygene)
-
-    subpp = subp.add_parser('plot_Z', help='plots the single cell values')
+    # plot single-cell matrix using PCA.
+    subpp = subp.add_parser('plot_pca_sc', help='plots the single cell values using PCA')
     subpp.add_argument('-SC', dest='SC', required=True, help='path for matrix')
     subpp.add_argument('-sc_lbls', dest='sc_lbls', required=True, help='path for matrix')
     subpp.add_argument('-c_lbls', dest='c_lbls', required=True, help='path for matrix')
     subpp.add_argument('-fig', dest='fig_file', type=str, required=True, help='figure file')
-    subpp.set_defaults(func=pca_Z)
-
-    subpp = subp.add_parser('plot_genes', help='plots top 20 single cell values')
-    subpp.add_argument('-SC', dest='SC', required=True, help='path for matrix')
-    subpp.add_argument('-sc_lbls', dest='sc_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-b_lbls', dest='b_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-c_lbls', dest='c_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-fdir', dest='fig_dir', type=str, required=True, help='figure directory')
-    subpp.set_defaults(func=plot_genes)
-
-    subpp = subp.add_parser('plot_scatter', help='plots true/predictced scatter')
-    subpp.add_argument('-SC', dest='SC', required=True, help='path for matrix')
-    subpp.add_argument('-sc_lbls', dest='sc_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-b_lbls', dest='b_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-c_lbls', dest='c_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-wd', dest='work_dir', required=True, help='working directory for temporary files')
-    subpp.add_argument('-tf', dest='test_file', required=True, help='the test file')
-    subpp.add_argument('-rf', dest='ref_file', required=True, help='the reference file')
-    subpp.add_argument('-m', dest='method', required=True, help='method to test')
-    subpp.add_argument('-fig', dest='fig_file', type=str, required=True, help='figure file')
-    subpp.set_defaults(func=plot_scatter)
-
-    subpp = subp.add_parser('heatmap', help='heatmap/cluster single cell values')
-    subpp.add_argument('-SC', dest='SC', required=True, help='path for matrix')
-    subpp.add_argument('-sc_lbls', dest='sc_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-b_lbls', dest='b_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-c_lbls', dest='c_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-fig', dest='fig_path', type=str, required=True, help='figure path')
-    subpp.set_defaults(func=heatmap)
+    subpp.set_defaults(func=pca_sc)
 
     # parse args.
     args = main_p.parse_args()
