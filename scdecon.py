@@ -100,14 +100,17 @@ def _qp_solve_c(x, S):
 
 ### middle functions ###
 
-def solve_C(X, S, num_threads=1):
+def solve_C(X, Z, y, num_threads=1):
     """ solves using QP and multiprocessing """
 
     # create C.
     n = X.shape[1]
     m = X.shape[0]
-    k = S.shape[1]
+    k = len(np.unique(y))
     C = np.zeros((k,n), dtype=np.float)
+
+    # create S
+    S, t = avg_cat(y, np.transpose(Z))
 
     # create list of jobs.
     jobs = list()
@@ -125,7 +128,7 @@ def solve_C(X, S, num_threads=1):
             C[:,j] = c
             
     # return it.
-    return C
+    return S, C
 
 ### callable functions ###
 
@@ -149,19 +152,13 @@ def decon(args):
         logging.error("dimensions don't add up")
         sys.exit(1)
 
-    # decide which method to build S.
-    if args.y != None:
-        S, t = avg_cat(y, np.transpose(Z))
-    else:
-        raise NotImplementedError, 'i pity the fool that needs this'
-
     # run deconvolution
     num_threads = 1
     if args.num_threads != None:
         num_threads = args.num_threads
 
     # run it.
-    C = solve_C(X, S, num_threads = num_threads)
+    S, C = solve_C(X, Z, y, num_threads = num_threads)
 
     # sanity check
     if np.isnan(C).any() == True:

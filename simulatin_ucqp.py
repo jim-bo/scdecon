@@ -37,7 +37,7 @@ from utils.plotting import *
 #from utils.heirheat import *
 #from utils.cluster import *
 #from utils.rfuncs import *
-#from scdecon import solve_C
+from scdecon import solve_C
 
 # hack to silence argparser.
 warnings.filterwarnings('ignore', category=DeprecationWarning)
@@ -321,31 +321,9 @@ def _run_UCQP(X_path, Z_path, y_path, k, S_path, C_path, wdir, dkey, method_name
 
     # return the good info.
     return dkey, method_name, S_path, C_path
+    
 
-def _run_UCQP_miss(X_path, Z_path, y_path, k, S_path, C_path, wdir, dkey, method_name):
 
-    # extend paths.
-    X_path = '%s.npy' % X_path
-    Z_path = '%s.npy' % Z_path
-    y_path = '%s.npy' % y_path
-
-    print "whut"
-    sys.exit()
-
-    # load data.
-    X = np.load(X_path)
-    Z = np.load(Z_path)
-    y = np.load(y_path)
-
-    # call function.
-    S, C = solve_C(X, Z, y, num_threads=1)
-
-    # save them.
-    np.save(S_path, S)
-    np.save(C_path, C)
-
-    # return the good info.
-    return dkey, method_name, S_path, C_path
 
 def _prep_R(X_path, Z_path, y_path, k, S_path, C_path, wdir, dkey, method_name):
 
@@ -469,38 +447,6 @@ def _evl_C(key, C_true, c_path, scorefns, scorenms):
     scores = list()
     for scorefn, name in zip(scorefns, scorenms):
 
-        # score it column based average.
-        #if name in set(['rmse', 'pearson])
-        #s = np.average(np.array([scorefn(C_true[:,j], C_pred[:,j]) for j in range(C_true.shape[1])]))
-        s = scorefn(C_true, C_pred)
-
-        # sanity check.
-        if isinstance(s, float):
-            scores.append(s)
-
-    # return the score.
-    return key, scores
-
-def _evl_S(key, S_true, s_path, scorefns, scorenms):
-
-    # load the predicted concentrations.
-    S_pred = np.load(s_path)
-
-    print "whut dood"
-    sys.exit()
-
-    # sanity check.
-    if C_pred.shape != C_true.shape:
-        return None, None
-
-    # flatten them both.
-    C_true = np.hstack(C_true.T)
-    C_pred = np.hstack(C_pred.T)
-
-    # compute average metric.
-    scores = list()
-    for scorefn, name in zip(scorefns, scorenms):
-
 
         # score it column based average.
         #if name in set(['rmse', 'pearson])
@@ -513,6 +459,8 @@ def _evl_S(key, S_true, s_path, scorefns, scorenms):
 
     # return the score.
     return key, scores
+    
+
 
 ### functions ###
 
@@ -709,6 +657,7 @@ def create_exp(args):
     # save the master.
     save_pickle(mas_obj, master)
     save_pickle(dep_obj, dependent)
+
 
 
 def create_mis(args):
@@ -915,7 +864,6 @@ def create_mis(args):
     save_pickle(mas_obj, master)
     save_pickle(dep_obj, dependent)
 
-
 def run_exp(args):
     """ runs the experiment for a given method """
 
@@ -1106,7 +1054,7 @@ def run_mis(args):
             # save the results.
             save_pickle(res_obj, results)
 
-    # close pool and get results. 
+    # close pool and get results.
     pool.close()
     pool.join()
 
@@ -1122,7 +1070,6 @@ def run_mis(args):
 
     # save the results.
     save_pickle(res_obj, results)
-
 
 def evl_exp(args):
     """ evaluates the experiment for a given method """
@@ -1148,8 +1095,8 @@ def evl_exp(args):
     keys = sorted(results.keys(), key=operator.itemgetter(0,1,2,3,4,5))
 
     # define the score functions.
-    scorefns = [meanabs_vector, rmse_vector, meanrel_vector]
-    scorenms = ["meanabs", "rmse", "meanrel"]
+    scorefns = [meanabs_vector, rmse_vector, pearson_vector, rsquare_vector, meanrel_vector]
+    scorenms = ["meanabs", "rmse", "pearson", "r^2", "meanrel"]
 
     # loop over each dependent.
     pkey = ""
@@ -1165,11 +1112,8 @@ def evl_exp(args):
         if mkey != pkey:
             C_true = np.load('%s.npy' % master[mkey]['C'])
 
-        # skip if method not present.
-        if method_name not in results[dkey]: continue
-
         # score it.
-        output.append(_evl_C(skey, C_true, results[dkey][method_name]['C'], scorefns, scorenms))
+        output.append(_evl_job(skey, C_true, results[dkey][method_name]['C'], scorefns, scorenms))
 
     # compress by key
     compressed = dict()
@@ -1200,83 +1144,6 @@ def evl_exp(args):
             txt = '%s,%s,%.5f' % (txt, name, np.average(np.array(compressed[key][name])))
             print txt
 
-
-
-def evl_mis(args):
-    """ evaluates the experiment for a given method """
-
-    # setup directory.
-    sim_dir = os.path.abspath(args.sim_dir)
-    mas_obj = '%s/mas.cpickle' % sim_dir
-    dep_obj = '%s/dep.cpickle' % sim_dir
-    res_obj = '%s/res.cpickle' % sim_dir
-
-    # extract method info.
-    method_name, method_fn = args.method_sig
-
-    # load the simulation data stuff.
-    master = load_pickle(mas_obj)
-    dependent = load_pickle(dep_obj)
-    results = load_pickle(res_obj)
-
-    # track progress.
-    total = len(dependent.keys())
-
-    # sort the keys.
-    keys = sorted(results.keys(), key=operator.itemgetter(0,1,2,3,4,5))
-
-    # define the score functions.
-    scorefns = [meanabs_vector, rmse_vector, meanrel_vector]
-    scorenms = ["meanabs", "rmse", "meanrel"]
-
-    # loop over each dependent.
-    pkey = ""
-    pskey = ""
-    output = list()
-    for dkey in keys:
-
-        # expand the key.
-        n, k, e, c, q, m = dkey
-        mkey = (n, k, e, c, r, q)
-        skey = n, k, e, c, r, m        # remove reference ot repeat variable
-
-        # load the true concentrations.
-        if mkey != pkey:
-            C_true = np.load('%s.npy' % master[mkey]['C'])
-            S_true = np.load('%s.npy' % master[mkey]['S'])
-
-        # score it.
-        output.append(_evl_C(skey, C_true, results[dkey][method_name]['C'], scorefns, scorenms))
-        output.append(_evl_S(skey, S_true, results[dkey][method_name]['S'], scorefns, scorenms))
-
-    # compress by key
-    compressed = dict()
-    for key, scores in output:
-
-        # skip if missing.
-        if key == None: continue
-
-        # boot the key.
-        if key not in compressed:
-            compressed[key] = dict()
-
-        # loop over each score.
-        for s, name in zip(scores, scorenms):
-
-            # boot the scores.
-            if name not in compressed[key]:
-                compressed[key][name] = list()
-
-            # add it.
-            compressed[key][name].append(s)
-
-    # sort, average and print.
-    keys = sorted(compressed.keys(), key=operator.itemgetter(0,1,2,3,4))
-    for key in keys:
-        for name in scorenms:
-            txt = '%i,%i,%i,%i,%i' % key
-            txt = '%s,%s,%.5f' % (txt, name, np.average(np.array(compressed[key][name])))
-            print txt
 
 ### script ###
 
@@ -1296,13 +1163,7 @@ if __name__ == '__main__':
     subpp.add_argument('-o', dest='overwrite', action='store_true', help='overwrite existing, otherwise will only add new')
     subpp.set_defaults(func=create_exp)
 
-    # missing simulation
-    subpp = subp.add_parser('create_mis', help='creates experiment data with missing cell-type')
-    subpp.add_argument('-sd', dest='sim_dir', required=True, help='simulation directory for validation')
-    subpp.add_argument('-SC', dest='SC', required=True, help='path for matrix')
-    subpp.add_argument('-sc_lbls', dest='sc_lbls', required=True, help='path for matrix')
-    subpp.add_argument('-o', dest='overwrite', action='store_true', help='overwrite existing, otherwise will only add new')
-    subpp.set_defaults(func=create_mis)
+
 
     ## run the experiment ##
 
@@ -1317,13 +1178,7 @@ if __name__ == '__main__':
     me_g.add_argument('-DSA', dest='method_sig', action='store_const', const=('DSA', _run_DSA), help='DSA')
     subpp.set_defaults(func=run_exp)
 
-    # missing simulation
-    subpp = subp.add_parser('run_mis', help='creates experiment data')
-    subpp.add_argument('-sd', dest='sim_dir', required=True, help='simulation directory for validation')
-    subpp.add_argument('-p', type=int, dest='num_cpu', required=True, help='number of processors to use')
-    me_g = subpp.add_mutually_exclusive_group(required=True)
-    me_g.add_argument('-UCQP', dest='method_sig', action='store_const', const=('UCQP', _run_UCQP_miss), help='UCQP')
-    subpp.set_defaults(func=run_mis)
+
 
     ## evaluate the results ##
 

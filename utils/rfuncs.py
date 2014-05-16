@@ -38,12 +38,8 @@ def R_DECONF(X_path, Z_path, y_path, k, S_path, C_path, wdir):
     """ run DECONF using rpy2 """
 
     # extend paths.
-    X_path = '%s.txt' % X_path
-    Z_path = '%s.txt' % Z_path
     Stmp = '%s/S.txt' % wdir
     Ctmp = '%s/C.txt' % wdir
-
-    print wdir
 
     # run deconvolution.
     txt = '''# load libraries.
@@ -64,6 +60,106 @@ write.table(basis(res), file="{Stmp}", row.names=FALSE, col.names=FALSE)
 '''.format(X_path=X_path, Stmp=Stmp, Ctmp=Ctmp, num=k)
 
     # execute it.
-    R.r(txt)
+    try:
+        R.r(txt)
+    except rpy2.rinterface.RRuntimeError as e:
+        return False, False, False
+        
+    # it worked
+    return True, Stmp, Ctmp
+    
+def R_SSKL(X_path, Z_path, y_path, k, S_path, C_path, wdir):
+    """ run DECONF using rpy2 """
 
+    # extend paths.
+    Stmp = '%s/S.txt' % wdir
+    Ctmp = '%s/C.txt' % wdir
+
+    # simplify labels.
+    y = np.load(y_path)
+    lbls = ','.join(['%i' % x for x in y])
+
+    # run deconvolution.
+    txt = '''
+# load pure single-cells
+sigFile <- file.path("{Z_path}");
+Z <- as.matrix(read.table(sigFile, header=TRUE, sep="\\t", row.names=1, as.is=TRUE));
+Z <- Z + 1
+
+# labels
+y <- c({y});
+
+# perform extraction.
+sml <- extractMarkers(Z, data=y, method='HSD')
+
+# load the mixture data.
+exprsFile <- file.path("{X_path}");
+exprs <- as.matrix(read.table(exprsFile, header=TRUE, sep="\\t", row.names=1, as.is=TRUE));
+eset <- ExpressionSet(assayData=exprs);
+
+# perform deconvolution.
+res <- ged(eset, sml, 'ssKL')
+
+# write matrix.
+write.table(coef(res), file="{Ctmp}", row.names=FALSE, col.names=FALSE)
+write.table(basis(res), file="{Stmp}", row.names=FALSE, col.names=FALSE)
+'''.format(X_path=X_path, Z_path=Z_path, Stmp=Stmp, Ctmp=Ctmp, num=k, y=lbls)
+
+    # execute it.
+    try:
+        R.r(txt)
+    except rpy2.rinterface.RRuntimeError as e:
+        return False, False, False
+        
+    # it worked
+    return True, Stmp, Ctmp
+        
+def R_DSA(X_path, Z_path, y_path, k, S_path, C_path, wdir):
+    """ run DECONF using rpy2 """
+
+    # extend paths.
+    Stmp = '%s/S.txt' % wdir
+    Ctmp = '%s/C.txt' % wdir
+
+    # simplify labels.
+    y = np.load(y_path)
+    lbls = ','.join(['%i' % x for x in y])
+
+    # run deconvolution.
+    txt = '''
+# load pure single-cells
+sigFile <- file.path("{Z_path}");
+Z <- as.matrix(read.table(sigFile, header=TRUE, sep="\\t", row.names=1, as.is=TRUE));
+Z <- Z + 1
+
+# labels
+y <- c({y});
+
+# perform extraction.
+sml <- extractMarkers(Z, data=y, method='HSD')
+
+# load the mixture data.
+exprsFile <- file.path("{X_path}");
+exprs <- as.matrix(read.table(exprsFile, header=TRUE, sep="\\t", row.names=1, as.is=TRUE));
+eset <- ExpressionSet(assayData=exprs);
+
+# perform deconvolution.
+res <- ged(eset, sml, 'DSA')
+
+# write matrix.
+write.table(coef(res), file="{Ctmp}", row.names=FALSE, col.names=FALSE)
+write.table(basis(res), file="{Stmp}", row.names=FALSE, col.names=FALSE)
+'''.format(X_path=X_path, Z_path=Z_path, Stmp=Stmp, Ctmp=Ctmp, num=k, y=lbls)
+
+    # execute it.
+    try:
+        R.r(txt)
+    except rpy2.rinterface.RRuntimeError as e:
+        return False, False, False
+        
+    # it worked
+    return True, Stmp, Ctmp
+    
+
+    
 
