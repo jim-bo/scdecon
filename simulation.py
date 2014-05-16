@@ -37,7 +37,7 @@ from utils.plotting import *
 #from utils.heirheat import *
 #from utils.cluster import *
 #from utils.rfuncs import *
-#from scdecon import solve_C
+from scdecon import solve_C, solve_SC
 
 # hack to silence argparser.
 warnings.filterwarnings('ignore', category=DeprecationWarning)
@@ -211,16 +211,9 @@ def _create_C(n, k, c_type):
             for j in range(n):
                 C[:,j] = C[:,j] / np.sum(C[:,j])
 
-        elif c_type == 3:
-
-            # geometric.
-            x = list(np.vander([k], k)[0])
-            random.shuffle(x)
-            x = [float(z) for z in x]
-            x = np.array(x)
-            x = x / np.sum(x)
-            C[:,j] = x
-
+        else:
+            raise NotImplementedError
+            
     # round them to 3 decimals.
     C = C.round(3)
 
@@ -322,15 +315,12 @@ def _run_UCQP(X_path, Z_path, y_path, k, S_path, C_path, wdir, dkey, method_name
     # return the good info.
     return dkey, method_name, S_path, C_path
 
-def _run_UCQP_miss(X_path, Z_path, y_path, k, S_path, C_path, wdir, dkey, method_name):
+def _run_UCQPM(X_path, Z_path, y_path, k, S_path, C_path, wdir, dkey, method_name):
 
     # extend paths.
     X_path = '%s.npy' % X_path
     Z_path = '%s.npy' % Z_path
     y_path = '%s.npy' % y_path
-
-    print "whut"
-    sys.exit()
 
     # load data.
     X = np.load(X_path)
@@ -338,7 +328,12 @@ def _run_UCQP_miss(X_path, Z_path, y_path, k, S_path, C_path, wdir, dkey, method
     y = np.load(y_path)
 
     # call function.
-    S, C = solve_C(X, Z, y, num_threads=1)
+    S, C = solve_SC(X, Z, y)
+
+    # sanity check.
+    #assert S.shape[1] == len(np.unique(y)) + 1
+    #for j in range(X.shape[1]):
+    #    assert abs(1.0 - np.sum(C[:,j])) < 0.001
 
     # save them.
     np.save(S_path, S)
@@ -346,6 +341,7 @@ def _run_UCQP_miss(X_path, Z_path, y_path, k, S_path, C_path, wdir, dkey, method
 
     # return the good info.
     return dkey, method_name, S_path, C_path
+
 
 def _prep_R(X_path, Z_path, y_path, k, S_path, C_path, wdir, dkey, method_name):
 
@@ -452,10 +448,7 @@ def _run_DSA(X_path, Z_path, y_path, k, S_path, C_path, wdir, dkey, method_name)
     # save and return.
     return _save_R(dkey, method_name, status, Stmp, Ctmp, S_path, C_path)
 
-def _evl_C(key, C_true, c_path, scorefns, scorenms):
-
-    # load the predicted concentrations.
-    C_pred = np.load(c_path)
+def _evl_C(key, C_true, C_pred, scorefns, scorenms):
 
     # sanity check.
     if C_pred.shape != C_true.shape:
@@ -470,49 +463,72 @@ def _evl_C(key, C_true, c_path, scorefns, scorenms):
     for scorefn, name in zip(scorefns, scorenms):
 
         # score it column based average.
-        #if name in set(['rmse', 'pearson])
-        #s = np.average(np.array([scorefn(C_true[:,j], C_pred[:,j]) for j in range(C_true.shape[1])]))
         s = scorefn(C_true, C_pred)
 
         # sanity check.
-        if isinstance(s, float):
-            scores.append(s)
+        scores.append(s)
 
     # return the score.
     return key, scores
 
-def _evl_S(key, S_true, s_path, scorefns, scorenms):
-
-    # load the predicted concentrations.
-    S_pred = np.load(s_path)
-
-    print "whut dood"
-    sys.exit()
+def _evl_s(key, s_true, s_pred, scorefns, scorenms):
 
     # sanity check.
-    if C_pred.shape != C_true.shape:
+    if s_pred.shape != s_true.shape:
         return None, None
-
-    # flatten them both.
-    C_true = np.hstack(C_true.T)
-    C_pred = np.hstack(C_pred.T)
 
     # compute average metric.
     scores = list()
     for scorefn, name in zip(scorefns, scorenms):
 
-
         # score it column based average.
-        #if name in set(['rmse', 'pearson])
-        #s = np.average(np.array([scorefn(C_true[:,j], C_pred[:,j]) for j in range(C_true.shape[1])]))
-        s = scorefn(C_true, C_pred)
+        s = scorefn(s_true, s_pred)
 
         # sanity check.
-        if isinstance(s, float):
-            scores.append(s)
+        scores.append(s)
 
     # return the score.
     return key, scores
+
+def _remap_missing(C_test, S_test, mj, k):
+    
+    # remap the row order for C
+    Ctmp = C_test.copy()
+    C_test[mj, :] = Ctmp[-1,:]
+    for l in range(mj+1, k):
+        C_test[l, :] = Ctmp[l-1, :]
+
+    # remap the column order for H/S
+    Stmp = S_test.copy()
+    S_test[:, mj] = S_test[:,-1]
+    for l in range(mj+1, k):
+        S_test[:, l] = Stmp[:, l-1]
+
+    # return it.
+    return C_test, S_test
+
+def _save_data(e_dir, key, names, matrs, master):
+    
+    # create the directory.
+    if os.path.isdir(e_dir) == False:
+        subprocess.call(["mkdir", "-p", e_dir])
+
+    # save them.
+    master[key] = dict()
+    for l, r in zip(names, matrs):
+
+        # create the base path.
+        l_path = "%s/%s" % (e_dir, l)
+
+        # save in numpy format.
+        np.save('%s.npy' % l_path, r)
+
+        # save some in R format.
+        if l in set(['ZMG', 'XG']):
+            write_r_mat('%s.txt' % l_path, r)
+
+        # save to the master key.
+        master[key][l] = l_path
 
 ### functions ###
 
@@ -550,18 +566,12 @@ def create_exp(args):
     else:
         master = load_pickle(mas_obj)
 
-    # build the dependent object.
-    if os.path.isfile(dep_obj) == False:
-        dependent = dict()
-    else:
-        dependent = load_pickle(dep_obj)
-
     # create variable iterators.
     nmixs = np.arange(5, 55, 5)                             # mixtures
     mgene = np.array([4, 8, 16, 24, 48, 96, 128, 256])      # genes
     kcell = np.arange(3, 6, 1)                              # cell types
     enois = np.arange(5, 125, 25)                           # samples in mixture
-    ctype = np.arange(3)                                    # concentration type.
+    ctype = np.arange(2)                                    # concentration type.
     qtrys = np.arange(0, 10, 1)                             # repitions
 
     # simulate the single-cells.
@@ -574,10 +584,6 @@ def create_exp(args):
     for a in range(kmax):
         ilu[a] = np.where(samp_y == a)[0]
 
-    # build master S.
-    Smaster, cats = avg_cat(sc_lbls, np.transpose(SC))
-    Smaster.setflags(write=False)
-
     # define mapping for cell-types less than given.
     kmap = dict()
     kmap[2] = [1,2]
@@ -585,19 +591,14 @@ def create_exp(args):
     kmap[4] = [1,2,3,4]
     kmap[5] = [0,1,2,3,4]
 
-    # create the master matrix.
-    m = mgene[-1]
+    # iterate over all variables but the genes.
     for n, k, e, c, q in itertools.product(nmixs, kcell, enois, ctype, qtrys):
 
         # master key.
-        key = (n, k, e, c, q)
-
-        # overwrite mode.
-        if key in master and args.overwrite == False:
-            continue
+        key = [n, k, e, c, q]
 
         # note it.
-        logging.info("building: %i %i %i %i %i" % (n, k, e, c, q))
+        logging.info("building: %s" % ' '.join([str(v) for v in key]))
 
         # fix number of single-cells to k * n
         t = k * n
@@ -608,8 +609,19 @@ def create_exp(args):
         # create the signature.
         H, hy = avg_cat(y, np.transpose(Z))
 
+        # create the reduced signature.
+        idx = np.where(y!=r)[0]
+        ZM = Z[:, idx]
+        ym = y[idx]
+        HM, hy = avg_cat(ym, np.transpose(ZM))
+
         # build the concentration
         C = _create_C(n, k, c)
+
+        # create the master X
+        X = _create_X(n, m, k, e, C, SAMPLES, ilu, kmap[k])
+
+        raise NotImplementedError
 
         # create the mixture.
         X = _create_X(n, m, k, e, C, SAMPLES, ilu, kmap[k])
@@ -745,20 +757,18 @@ def create_mis(args):
     else:
         master = load_pickle(mas_obj)
 
-    # build the dependent object.
-    if os.path.isfile(dep_obj) == False:
-        dependent = dict()
-    else:
-        dependent = load_pickle(dep_obj)
-
     # create variable iterators.
-    nmixs = np.arange(50, 55, 5)                             # mixtures
-    mgene = np.array([4, 48, 256])      # genes
-    kcell = np.arange(5, 6, 1)                              # cell types
-    enois = np.arange(100, 125, 25)                           # samples in mixture
-    ctype = np.arange(1)                                    # concentration type.
-    rmode = np.arange(0, 6, 1)                             # cell-type to remove
-    qtrys = np.arange(0, 1, 1)                             # repitions
+    #nmixs = np.arange(5, 25, 5)                            # mixtures.
+    nmixs = np.array([10])                                  # mixtures.
+    mgene = np.array([16])                                   # genes.
+    #mgene = np.array([4, 24])                              # genes.
+    kcell = np.arange(4, 5, 1)                              # cell types.
+    #enois = np.array([0, 2, 6, 16, 64, 128])                # samples in mixture.
+    enois = np.array([0])                                   # samples in mixture.
+    #ctype = np.arange(2)                                    # concentration type.
+    ctype = np.array([1])                                    # concentration type.
+    rmode = np.arange(0, 6, 1)                              # cell-type to remove
+    qtrys = np.arange(0, 10, 1)                              # repitions
 
     # simulate the single-cells.
     SAMPLES, samp_y = sim.sample_1(10000)
@@ -770,10 +780,6 @@ def create_mis(args):
     for a in range(kmax):
         ilu[a] = np.where(samp_y == a)[0]
 
-    # build master S.
-    Smaster, cats = avg_cat(sc_lbls, np.transpose(SC))
-    Smaster.setflags(write=False)
-
     # define mapping for cell-types less than given.
     kmap = dict()
     kmap[2] = [1,2]
@@ -782,18 +788,16 @@ def create_mis(args):
     kmap[5] = [0,1,2,3,4]
 
     # create the master matrix.
-    m = mgene[-1]
     for n, k, e, c, r, q in itertools.product(nmixs, kcell, enois, ctype, rmode, qtrys):
-
-        # master key.
-        key = (n, k, e, c, r, q)
-
-        # overwrite mode.
-        if key in master and args.overwrite == False:
-            continue
+       
+        # skip the crazy ones.
+        if r >= k: continue
+       
+        # begin key.
+        mkey = [n, k, e, c, r, q]
 
         # note it.
-        logging.info("building: %i %i %i %i %i %i" % (n, k, e, c, r, q))
+        logging.info("building: %s" % ' '.join([str(v) for v in mkey]))
 
         # fix number of single-cells to k * n
         t = k * n
@@ -804,117 +808,60 @@ def create_mis(args):
         # create the signature.
         H, hy = avg_cat(y, np.transpose(Z))
 
+        # create the reduced signature.
+        idx = np.where(y!=r)[0]
+        ZM = Z[:, idx]
+        ym = y[idx]
+
+        # renumber labeling.
+        for l in range(r+1, k):
+            ym[np.where(ym == l)[0]] -= 1
+            
+        # compute signature again.
+        HM, hy = avg_cat(ym, np.transpose(ZM))
+
         # build the concentration
         C = _create_C(n, k, c)
 
-        # create the mixture.
-        X = _create_X(n, m, k, e, C, SAMPLES, ilu, kmap[k])
+        # create the master X
+        if e != 0:
+            # create using sampling.
+            X = _create_X(n, m, k, e, C, SAMPLES, ilu, kmap[k])
+        else:
+            # create using dot product.
+            X = np.dot(H, C)
 
-        # remove cell type.
-        yidx = np.where(y != r)[0]
-        ytmp = y[yidx]
-        Ztmp = Z[:, yidx]
+        # save first masters.
+        m_dir = '%s/true/%i_%i_%i/%i_%i_%i' % (sim_dir, n, k, e, c, r, q)
+        names = ["Z", "y", "H", "C" , "X", "ZM", "ym", "HM"]
+        matrs = [Z, y, H, C, X, ZM, ym, HM]
+        _save_data(m_dir, tuple(mkey), names, matrs, master)
 
-        # renumber stuff.
-        for ll in range(r+1, k):
-            ytmp[np.where(ytmp == ll)[0]] -= 1
-
-        # create experiment paths.
-        e_dir = '%s/master/%i_%i_%i_%i_%i_%i' % (sim_dir, n, k, e, c, r, q)
-
-        # create the directory.
-        if os.path.isdir(e_dir) == False:
-            subprocess.call(["mkdir", "-p", e_dir])
-
-        # save them.
-        names = "ZyHCX"
-        matrs = [Ztmp, ytmp, H, C, X]
-        master[key] = dict()
-        for l, r in zip(names, matrs):
-
-            # create the base path.
-            l_path = "%s/%s" % (e_dir, l)
-
-            # save in numpy format.
-            np.save('%s.npy' % l_path, r)
-
-            # save some in R format.
-            if l == "Z" or l == "X":
-                write_r_mat('%s.txt' % l_path, r)
-
-            # save to the master key.
-            master[key][l] = l_path
-
-    # save the master.
-    save_pickle(mas_obj, master)
-
-    # create the derivative combinations.
-    for n, k, e, c, r, q in itertools.product(nmixs, kcell, enois, ctype, rmode, qtrys):
-
-        # record it.
-        logging.info("loading: %i %i %i %i %i %i" % (n, k, e, c, r, q))
-
-        # master key.
-        mkey = (n, k, e, c, r, q)
-
-        # load the master data.
-        Z = np.load('%s.npy' % master[mkey]['Z'])
-        y = np.load('%s.npy' % master[mkey]['y'])
-        H = np.load('%s.npy' % master[mkey]['H'])
-        C = np.load('%s.npy' % master[mkey]['C'])
-        X = np.load('%s.npy' % master[mkey]['X'])
-
-        # no funny business.
-        for p in [Z, y, H, C, X]:
-            p.setflags(write=False)
-
-        # loop over derivatives.
+        # loop over the gene variable.
         for m in mgene:
+            
+            # skip the crazy ones.
+            if n >= m: continue
+            
+            # strip X, ZM to right size.
+            XG = X[0:m, :]
+            ZMG = ZM[0:m, :]
 
-            # dependent key.
-            dkey = (n, k, e, c, r, q, m)
-
-            # overwrite mode.
-            if dkey in dependent and args.overwrite == False:
+            # update key.
+            dkey = tuple(mkey + [m])
+            
+            # skip saving this guy.
+            if dkey in master and args.overwrite == False:
                 continue
 
-            # note it.
-            logging.info("building: %i" % (m))
-
-            # create single-cell subset.
-            Xs = X[range(m),:]
-            Zs = Z[range(m),:]
-
             # create experiment paths.
-            e_dir = '%s/dependent/%i_%i_%i_%i_%i_%i/%i' % (sim_dir, n, k, e, c, r, q, m)
-
-            # create the directory.
-            if os.path.isdir(e_dir) == False:
-                subprocess.call(["mkdir", "-p", e_dir])
-
-            # save them.
-            names = "XZ"
-            matrs = [Xs, Zs]
-            dependent[dkey] = dict()
-            for l, w in zip(names, matrs):
-
-                # create the base path.
-                l_path = "%s/%s" % (e_dir, l)
-
-                # save in numpy format.
-                np.save('%s.npy' % l_path, w)
-
-                # save some in R format.
-                if l == "Z" or l == "X":
-                    write_r_mat('%s.txt' % l_path, w)
-
-                # save to the master key.
-                dependent[dkey][l] = l_path
+            d_dir = '%s/input/%i_%i_%i_%i/%i_%i_%i' % (sim_dir, n, k, e, c, r, q, m)
+            names = ["XG", "ZMG"]
+            matrs = [XG, ZMG]
+            _save_data(d_dir, dkey, names, matrs, master)
 
     # save the master.
     save_pickle(mas_obj, master)
-    save_pickle(dep_obj, dependent)
-
 
 def run_exp(args):
     """ runs the experiment for a given method """
@@ -1034,7 +981,6 @@ def run_mis(args):
 
     # load the simulation data stuff.
     master = load_pickle(mas_obj)
-    dependent = load_pickle(dep_obj)
 
     # create results dictionary.
     if os.path.isfile(res_obj) == False:
@@ -1043,37 +989,42 @@ def run_mis(args):
         results = load_pickle(res_obj)
 
     # track progress.
-    total = len(dependent.keys())
+    total = len(master.keys())
 
     # load R libraries.
     #load_R_libraries()
 
     # create the pool.
-    pool = Pool(processes = args.num_cpu)
+    if args.debug == False:
+        pool = Pool(processes = args.num_cpu)
+
+    # solve easiest first.
+    keys = sorted(master.keys(), key=operator.itemgetter(0,1,2,3,4,5))
 
     # loop over each dependent.
     active = list()
     cnt = 0
-    for dkey in dependent:
+    for dkey in keys:
+
+        # skip short keys.
+        if len(dkey) != 7: continue
 
         # check if we can skip.
-        if dkey in results and method_name in results[dkey]:
+        if dkey in results and method_name in results[dkey] and args.debug == False:
             if os.path.isfile(results[dkey][method_name]["S"]) and os.path.isfile(results[dkey][method_name]["C"]):
                 continue
 
         # simplify.
         n, k, e, c, r, q, m = dkey
-
-        # infer master key.
-        mkey = (n, k, e, c, r, q)
+        mkey = n, k, e, c, r, q
 
         # extract paths.
-        Z_path = dependent[dkey]['Z']
-        X_path = dependent[dkey]['X']
-        y_path = master[mkey]['y']
+        XG_path = master[dkey]['XG']
+        ZMG_path = master[dkey]['ZMG']
+        ym_path = master[mkey]['ym']
 
         # make a working directory.
-        w_dir = '%s/working/%s/%i_%i_%i_%i_%i_%i/%i' % (sim_dir, method_name, n, k, e, c, r, q, m)
+        w_dir = '%s/working/%s/%i_%i_%i_%i/%i_%i_%i' % (sim_dir, method_name, n, k, e, c, r, q, m)
         S_path = '%s/S.npy' % w_dir
         C_path = '%s/C.npy' % w_dir
 
@@ -1082,13 +1033,38 @@ def run_mis(args):
             subprocess.call(['mkdir', '-p', w_dir])
 
         # call run method, return process.
-        logging.info("running: %i of %i: %s %i_%i_%i_%i_%i_%i %i" % (cnt, total, method_name, n, k, e, c, r, q, m))
-        #active.append(pool.apply_async(method_fn, (X_path, Z_path, y_path, k, S_path, C_path, w_dir, dkey, method_name)))
-        x = method_fn(X_path, Z_path, y_path, k, S_path, C_path, w_dir, dkey, method_name)
+        fnargs = (XG_path, ZMG_path, ym_path, k, S_path, C_path, w_dir, dkey, method_name)
+        if args.debug == False:
+
+            # run it in multiprocessing pool
+            logging.info("running: %i of %i: %s %i_%i_%i_%i_%i_%i %i" % (cnt, total, method_name, n, k, e, c, r, q, m))
+            active.append(pool.apply_async(method_fn, fnargs))
+        else:
+
+            # run it in this thread.
+            logging.debug("debugging: %i of %i: %s %i_%i_%i_%i_%i_%i %i" % (cnt, total, method_name, n, k, e, c, r, q, m))
+            debug_result = method_fn(*fnargs)
+            
+            # load cheat data.
+            S_true = np.load('%s.npy' % master[mkey]['H'])
+            S_true  = S_true[0:m,:]
+            C_true = np.load('%s.npy' % master[mkey]['C'])
+            S_pred = np.load(debug_result[2])
+            C_pred = np.load(debug_result[3])
+            C_pred, S_pred = _remap_missing(C_pred, S_pred, r, k)
+            
+            # evaluate it directly.
+            key, c_score = _evl_C(dkey, C_true, C_pred, [meanabs_vector], ["meanabs"])
+            key, s_score = _evl_s(dkey, S_true[:,r], S_pred[:,r], [meanrel_vector], ["meanrel"])
+
+            # report it.
+            logging.debug("s_score: %.5f\tc_score: %.5f" % (s_score[0], c_score[0]))
+
+        # progress tracking variable.
         cnt += 1
 
         # flush pool occasionally.
-        if cnt % 1000 == 0:
+        if cnt % 500 == 0 and args.debug == False:
 
             # wait on all active processes.
             for a in active:
@@ -1107,21 +1083,105 @@ def run_mis(args):
             save_pickle(res_obj, results)
 
     # close pool and get results. 
-    pool.close()
-    pool.join()
+    if args.debug == False:
+        
+        # close the worker pool.
+        pool.close()
+        pool.join()
 
-    # add to results.
-    for a in active:
+        # add to results.
+        for a in active:
 
-        # get info and add it.
-        dkey, method_name, S_path, C_path = a.get()
-        if S_path == None: continue
-        if dkey not in results:
-            results[dkey] = dict()
-        results[dkey][method_name] = {"S":S_path, "C":C_path}
+            # get info and add it.
+            dkey, method_name, S_path, C_path = a.get()
+            if S_path == None: continue
+            if dkey not in results:
+                results[dkey] = dict()
+            results[dkey][method_name] = {"S":S_path, "C":C_path}
 
-    # save the results.
-    save_pickle(res_obj, results)
+        # save the results.
+        save_pickle(res_obj, results)
+
+def pred_mis(args):
+    """ runs the experiment for a given method """
+
+    # setup directory.
+    sim_dir = os.path.abspath(args.sim_dir)
+    mas_obj = '%s/mas.cpickle' % sim_dir
+
+    # load the simulation data stuff.
+    master = load_pickle(mas_obj)
+
+    # solve easiest first.
+    keys = sorted(master.keys(), key=operator.itemgetter(0,1,2,3,4,5))
+
+    # loop over each dependent.
+    for dkey in keys:
+
+        # skip short keys.
+        if len(dkey) != 7: continue
+
+        # simplify.
+        n, k, e, c, r, q, m = dkey
+        mkey = n, k, e, c, r, q
+
+        # extract paths.
+        XG_path = master[dkey]['XG']
+        ZMG_path = master[dkey]['ZMG']
+        ym_path = master[mkey]['ym']
+
+        # make a working directory.
+        ucqp_dir = '%s/working/%s/%i_%i_%i_%i/%i_%i_%i' % (sim_dir, "UCQP", n, k, e, c, r, q, m)
+        ucqpm_dir = '%s/working/%s/%i_%i_%i_%i/%i_%i_%i' % (sim_dir, "UCQPM", n, k, e, c, r, q, m)
+        S_path = '%s/S.npy' % ucqp_dir
+        S_path_m = '%s/S.npy' % ucqpm_dir
+        C_path = '%s/C.npy' % ucqp_dir
+        C_path_m = '%s/C.npy' % ucqpm_dir
+        
+        for d in [ucqp_dir, ucqpm_dir]:
+            subprocess.call(["mkdir", "-p", d])
+        
+        # run with missing data.
+        _run_UCQPM(XG_path, ZMG_path, ym_path, k, S_path_m, C_path_m, ucqpm_dir, dkey, "UCQPM")
+        _run_UCQP(XG_path, ZMG_path, ym_path, k, S_path, C_path, ucqp_dir, dkey, "UCQP")
+        
+        # load cheat data.
+        X = np.load('%s.npy' % XG_path)
+        S_true = np.load('%s.npy' % master[mkey]['H'])
+        S_true  = S_true[0:m,:]
+        C_true = np.load('%s.npy' % master[mkey]['C'])
+        
+        # load missing prediction
+        print S_path_m, S_path
+        S_predm = np.load(S_path_m)
+        C_predm = np.load(C_path_m)
+        C_predm, S_predm = _remap_missing(C_predm, S_predm, r, k)
+        
+        # load the other prediction.
+        S_pred = np.load(S_path)
+        C_pred = np.load(C_path)
+        
+        # compute the residual.
+        X1 = np.dot(S_pred, C_pred)
+        X2 = np.dot(S_predm, C_predm)
+        
+        xl = np.hstack(X.T)
+        x1l = np.hstack(X1.T)
+        x2l = np.hstack(X2.T)
+        
+        r1 = np.sqrt(np.sum(np.square(xl - x1l)))
+        r2 = np.sqrt(np.sum(np.square(xl - x2l)))
+        
+        print r1, r2
+
+            
+        # evaluate it directly.
+        #key, c_score = _evl_C(dkey, C_true, C_pred, [meanabs_vector], ["meanabs"])
+        #key, s_score = _evl_s(dkey, S_true[:,r], S_pred[:,r], [meanrel_vector], ["meanrel"])
+
+        # report it.
+        #logging.debug("s_score: %.5f\tc_score: %.5f" % (s_score[0], c_score[0]))
+
 
 
 def evl_exp(args):
@@ -1208,19 +1268,15 @@ def evl_mis(args):
     # setup directory.
     sim_dir = os.path.abspath(args.sim_dir)
     mas_obj = '%s/mas.cpickle' % sim_dir
-    dep_obj = '%s/dep.cpickle' % sim_dir
     res_obj = '%s/res.cpickle' % sim_dir
 
     # extract method info.
-    method_name, method_fn = args.method_sig
-
+    method_name = args.method_name
+    assert method_name != "UCQP"
+    
     # load the simulation data stuff.
     master = load_pickle(mas_obj)
-    dependent = load_pickle(dep_obj)
     results = load_pickle(res_obj)
-
-    # track progress.
-    total = len(dependent.keys())
 
     # sort the keys.
     keys = sorted(results.keys(), key=operator.itemgetter(0,1,2,3,4,5))
@@ -1230,28 +1286,37 @@ def evl_mis(args):
     scorenms = ["meanabs", "rmse", "meanrel"]
 
     # loop over each dependent.
-    pkey = ""
-    pskey = ""
     output = list()
     for dkey in keys:
 
+        # skip short keys.
+        if len(dkey) != 7: continue
+
         # expand the key.
-        n, k, e, c, q, m = dkey
+        n, k, e, c, r, q, m = dkey
         mkey = (n, k, e, c, r, q)
         skey = n, k, e, c, r, m        # remove reference ot repeat variable
 
         # load the true concentrations.
-        if mkey != pkey:
-            C_true = np.load('%s.npy' % master[mkey]['C'])
-            S_true = np.load('%s.npy' % master[mkey]['S'])
-
+        S_true = np.load('%s.npy' % master[mkey]['H'])
+        S_true = S_true[0:m,:]
+        C_true = np.load('%s.npy' % master[mkey]['C'])
+        
+        S_pred = np.load(results[dkey][method_name]['S'])
+        C_pred = np.load(results[dkey][method_name]['C'])
+        C_pred, S_pred = _remap_missing(C_pred, S_pred, r, k)
+            
+        # evaluate it directly.
+        key, c_score = _evl_C(dkey, C_true, C_pred, scorefns, scorenms)
+        key, s_score = _evl_s(dkey, S_true[:,r], S_pred[:,r], scorefns, scorenms)
+        
         # score it.
-        output.append(_evl_C(skey, C_true, results[dkey][method_name]['C'], scorefns, scorenms))
-        output.append(_evl_S(skey, S_true, results[dkey][method_name]['S'], scorefns, scorenms))
+        for h in range(len(scorenms)):
+            output.append((skey, scorenms[h], s_score[h], c_score[h]))
 
     # compress by key
     compressed = dict()
-    for key, scores in output:
+    for key, name, s_score, c_score in output:
 
         # skip if missing.
         if key == None: continue
@@ -1260,22 +1325,24 @@ def evl_mis(args):
         if key not in compressed:
             compressed[key] = dict()
 
-        # loop over each score.
-        for s, name in zip(scores, scorenms):
+        # boot the scores.
+        if name not in compressed[key]:
+            compressed[key][name] = dict()
+            compressed[key][name]['S'] = list()
+            compressed[key][name]['C'] = list()
 
-            # boot the scores.
-            if name not in compressed[key]:
-                compressed[key][name] = list()
-
-            # add it.
-            compressed[key][name].append(s)
+        # add it.
+        compressed[key][name]['S'].append(s_score)
+        compressed[key][name]['C'].append(c_score)
 
     # sort, average and print.
     keys = sorted(compressed.keys(), key=operator.itemgetter(0,1,2,3,4))
     for key in keys:
         for name in scorenms:
-            txt = '%i,%i,%i,%i,%i' % key
-            txt = '%s,%s,%.5f' % (txt, name, np.average(np.array(compressed[key][name])))
+            s = np.average(np.array(compressed[key][name]['S']))
+            c = np.average(np.array(compressed[key][name]['C']))
+            txt = '%i,%i,%i,%i,%i,%i' % key
+            txt = '%s,%s,%.5f,%.5f' % (txt, name, s, c)
             print txt
 
 ### script ###
@@ -1322,8 +1389,16 @@ if __name__ == '__main__':
     subpp.add_argument('-sd', dest='sim_dir', required=True, help='simulation directory for validation')
     subpp.add_argument('-p', type=int, dest='num_cpu', required=True, help='number of processors to use')
     me_g = subpp.add_mutually_exclusive_group(required=True)
-    me_g.add_argument('-UCQP', dest='method_sig', action='store_const', const=('UCQP', _run_UCQP_miss), help='UCQP')
+    me_g.add_argument('-UCQPM', dest='method_sig', action='store_const', const=('UCQPM', _run_UCQPM), help='UCQPM')
+    me_g.add_argument('-UCQP', dest='method_sig', action='store_const', const=('UCQP', _run_UCQP), help='UCQP')
+    subpp.add_argument('-d', dest='debug', action='store_true', help='use debug mode (i.e.) skip multiprocessing')
     subpp.set_defaults(func=run_mis)
+
+    # prediction accuracy
+    subpp = subp.add_parser('pred_mis', help='creates experiment data')
+    subpp.add_argument('-sd', dest='sim_dir', required=True, help='simulation directory for validation')
+    subpp.add_argument('-p', type=int, dest='num_cpu', required=True, help='number of processors to use')
+    subpp.set_defaults(func=pred_mis)
 
     ## evaluate the results ##
 
@@ -1337,6 +1412,14 @@ if __name__ == '__main__':
     me_g.add_argument('-SSKL', dest='method_sig', action='store_const', const=('SSKL', _run_SSKL), help='SSKL')
     me_g.add_argument('-DSA', dest='method_sig', action='store_const', const=('DSA', _run_DSA), help='DSA')
     subpp.set_defaults(func=evl_exp)
+
+    # missing simulation
+    subpp = subp.add_parser('evl_mis', help='evaluates experiment results')
+    subpp.add_argument('-sd', dest='sim_dir', required=True, help='simulation directory for validation')
+    me_g = subpp.add_mutually_exclusive_group(required=True)
+    me_g.add_argument('-UCQP', dest='method_name', action='store_const', const='UCQP', help='UCQP')
+    me_g.add_argument('-UCQPM', dest='method_name', action='store_const', const='UCQPM', help='UCQPM')
+    subpp.set_defaults(func=evl_mis)
 
     ## plotting ##
 

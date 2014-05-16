@@ -46,47 +46,32 @@ def norm_rows(m):
 
 def rsquare_vector(x, y):
     """ r2 """
+    mask = x != 0
+    x = x[mask]
+    y = y[mask]
     slope, intercept, r_value, p_value, std_err = stats.linregress(x, y)
     return r_value
 
 def pearson_vector(x, y):
     ''' pearson for vector '''
-
-    # return 1 if dey equal.
-    if np.sum(x == y) == len(x): return 1.0
+    mask = x != 0
+    x = x[mask]
+    y = y[mask]
     return stats.pearsonr(x,y)[0]
-
-def pearson_matrix(x, y):
-    ''' perason for matrix '''
-    # calculate column wise.
-    vals = list()
-    for j in range(x.shape[1]):
-        vals.append(pearson_vector(x[:,j], y[:,j]))
-    return np.average(np.array(vals))
 
 def rmse_vector(x, y):
     """ root mean square error """
-
+    mask = x != 0
+    x = x[mask]
+    y = y[mask]
     return statsmodels.tools.eval_measures.rmse(x, y)
-
-def rmse_matrix(x, y):
-    """ root mean square error """
-    vals = list()
-    for j in range(x.shape[1]):
-        vals.append(rmse_vector(x[:,j], y[:,j]))
-    return np.average(np.array(vals))
 
 def nrmse_vector(x, y):
     """ normalized root mean square error """
-
+    mask = x != 0
+    x = x[mask]
+    y = y[mask]
     return rmse_vector(x,y) / (y.max() - y.min())
-
-def nrmse_matrix(x, y):
-    """ normalized root mean square error """
-    vals = list()
-    for j in range(x.shape[1]):
-        vals.append(nrmse_vector(x[:,j], y[:,j]))
-    return np.average(np.array(vals))
 
 def meanabs_vector(x, y):
     return statsmodels.tools.eval_measures.meanabs(x, y)
@@ -94,30 +79,26 @@ def meanabs_vector(x, y):
 def sumabs_vector(x, y):
     return np.sum(np.abs(x-y))
 
-def meanabs_matrix(x, y):
-    vals = list()
-    for j in range(x.shape[1]):
-        vals.append(meanabs_vector(x[:,j], y[:,j]))
-    return np.average(np.array(vals))
-
 def meanrel_vector(x, y):
-    return np.mean(np.abs(x-y)/x)
+    mask = x != 0
+    x = x[mask]
+    y = y[mask]
+    return np.mean(np.abs(x-y)/(x+0.0001))
 
 def maxrel_vector(x, y):
+    mask = x != 0
+    x = x[mask]
+    y = y[mask]
     return np.max(np.abs(x-y)/x)
 
 def minrel_vector(x, y):
+    mask = x != 0
+    x = x[mask]
+    y = y[mask]
     return np.min(np.abs(x-y)/x)
 
 def maxabs_vector(x, y):
     return statsmodels.tools.eval_measures.maxabs(x, y)
-
-def maxabs_matrix(x, y):
-    vals = list()
-    for j in range(x.shape[1]):
-        vals.append(maxabs_vector(x[:,j], y[:,j]))
-    return np.average(np.array(vals))
-
 
 def avg_cat(targets, expr):
     ''' computes S based on average category '''
