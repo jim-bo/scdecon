@@ -119,6 +119,8 @@ def avg_cat(targets, expr):
         # select just matches of this gene, category.
         idxs = np.where(targets==cats[j])[0]
 
+        #print idxs, expr.shape
+
         # take subset.
         sub = expr[idxs,:]
 
@@ -130,6 +132,40 @@ def avg_cat(targets, expr):
 
     # return the matrix.
     return S, cats
+
+def avg_cat_nozero(Z, y):
+    ''' computes S based on average category '''
+
+
+    # isolate unique states.
+    cats = np.unique(y)
+    k = len(cats)
+    m = Z.shape[0]
+    n = Z.shape[1]
+
+    # create the compressed aray.
+    S = np.zeros((m,k), dtype=np.float)
+
+    # loop overe ach category.
+    for l in cats:
+
+        # select just matches of this gene, category.
+        idxs = np.where(y == l)[0]
+        T = Z[:, idxs]
+        total = len(idxs)
+
+        # loop over each gene.
+        for i in range(m):
+
+            # average non-zeros
+            S[i,l] = np.average(np.where(T[i,:] != 0.0)[0])
+
+            # check for all zeros.
+            if np.isnan(S[i,l]) == True:
+                S[i,l] = 0.0
+
+    # return the matrix.
+    return S
 
 def save_experiment(out_file, Xs, Cs):
     """ saves the lists of numpy arrays using pickle"""

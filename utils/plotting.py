@@ -29,6 +29,7 @@ from sklearn.decomposition import PCA
 from utils.matops import *
 from utils.misc import *
 #from simulation import _sim_gen
+from simulation import _remap_missing, _match_pred
 
 ## high-level functions ##
 def pca_X_Z(X, Z, y, figure_path):
@@ -700,6 +701,238 @@ def plot_gene(args):
     fname = '%s/%s.pdf' % (args.fig_dir, gene_name)
     gene_histo(xlist, fname, gene_name)
 
+
+def plot_C(args):
+    """ evaluates the experiment for a given method """
+
+    # setup directory.
+    sim_dir = os.path.abspath(args.sim_dir)
+    mas_obj = '%s/mas.cpickle' % sim_dir
+    res_obj = '%s/res.cpickle' % sim_dir
+    c_lbls = np.load(args.c_lbls)
+    
+    # extract method info.
+    method_name = args.method_name
+    
+    # load the simulation data stuff.
+    master = load_pickle(mas_obj)
+    results = load_pickle(res_obj)
+
+    # sort the keys.
+    keys = sorted(results.keys(), key=operator.itemgetter(0,1,2,3,4,5))
+
+    # build the list.
+    true = dict()
+    pred = dict()
+    for l in range(args.k):
+        true[l] = list()
+        pred[l] = list()
+
+    # loop over each dependent.
+    r = -1
+    for dkey in keys:
+
+        # skip short keys.
+        #if len(dkey) != 6: continue
+        if len(dkey) != 7: continue
+
+        # expand the key.
+        n, k, e, c, r, q, m = dkey
+        #n, k, e, c, q, m = dkey
+        mkey = (n, k, e, c, r, q)
+        #mkey = (n, k, e, c, q)
+        skey = n, k, e, c, r, m        # remove reference ot repeat variable
+        #skey = n, k, e, c, m        # remove reference ot repeat variable and cell types
+
+        # skip till selected.
+        if n != args.n: continue
+        if k != args.k: continue
+        if e != args.e: continue
+        if c != args.c: continue
+        if m != args.m: continue
+
+        # load the true concentrations.
+        S_true = np.load('%s.npy' % master[mkey]['H'])
+        S_true = S_true[0:m,:]
+        C_true = np.load('%s.npy' % master[mkey]['C'])
+        
+        # load the predicted.
+        S_pred = np.load(results[dkey][method_name]['S'])
+        C_pred = np.load(results[dkey][method_name]['C'])
+               
+        # remap if its not DECONF
+        if method_name != "DECONF":
+
+            # remap to known order.
+            if r != -1:
+                C_pred, S_pred = _remap_missing(C_pred, S_pred, r, k)
+        else:
+            
+            # perform matching.
+            C_pred, S_pred = _match_pred(C_pred, S_pred, C_true, S_true)
+
+        # add to data.
+        for j in range(n):
+            #for l in range(k):
+            #    if l == r: continue
+            for l in [r]:
+                true[l].append(C_true[l,j])
+                pred[l].append(C_pred[l,j])
+        
+    # cast to array.
+    for l in range(args.k):
+        true[l] = np.array(true[l])
+        pred[l] = np.array(pred[l])
+    
+    # create color map.
+    num_colors = args.k
+    cmap = plt.get_cmap('gist_rainbow')
+    cnorm  = colors.Normalize(vmin=0, vmax=num_colors-1)
+    scalarMap = cm.ScalarMappable(norm=cnorm, cmap=cmap)
+
+    # print them
+    for l in range(args.k):
+
+        # get data.
+        x = true[l]
+        y = pred[l]
+
+        # plot the regression.
+        fit = plb.polyfit(x, y, 1)
+        fit_fn = plb.poly1d(fit)
+
+        # compute r^2
+        yhat = fit_fn(x)
+        ybar = np.sum(y)/len(y)
+        ssreg = np.sum((yhat-ybar)**2)
+        sstot = np.sum((y-ybar)**2)
+        r2 = ssreg / sstot
+
+        # compute the color.
+        color = cmap(1.*l/num_colors)
+
+        # plot the points.
+        plt.plot(x, y, '.', color=color, label='%s, r^2=%.2f' % (c_lbls[l],r2))
+
+        # plot the regression.
+        plt.plot(x, fit_fn(x), '--', color=color)
+
+        # plot middle line.
+        plt.plot(np.arange(0,1.1,.1), np.arange(0,1.1,.1), '-', color='black')
+
+    # add legend.
+    plt.legend(numpoints=1)
+    plt.ylim([0, 1.0])
+    plt.xlim([0, 1.0])
+    
+    # add labels.
+    plt.xlabel("observed")
+    plt.ylabel("predicted")
+
+    # add legend.
+    #plt.legend()
+    plt.savefig(args.fig_file)
+    
+
+def plot_S(args):
+    """ evaluates the experiment for a given method """
+
+    # setup directory.
+    sim_dir = os.path.abspath(args.sim_dir)
+    mas_obj = '%s/mas.cpickle' % sim_dir
+    res_obj = '%s/res.cpickle' % sim_dir
+    c_lbls = np.load(args.c_lbls)
+    b_lbls = np.load(args.b_lbls)
+    
+    # extract method info.
+    method_name = args.method_name
+    
+    # load the simulation data stuff.
+    master = load_pickle(mas_obj)
+    results = load_pickle(res_obj)
+
+    # sort the keys.
+    keys = sorted(results.keys(), key=operator.itemgetter(0,1,2,3,4,5))
+
+    # build the list.
+    true = dict()
+    pred = dict()
+    for l in range(args.k):
+        true[l] = list()
+        pred[l] = list()
+
+    # create the geene tracker.
+    genet = list()
+    for i in range(args.m):
+        genet.append(list())
+
+    # loop over each dependent.
+    r = -1
+    for dkey in keys:
+
+        # skip short keys.
+        #if len(dkey) != 6: continue
+        if len(dkey) != 7: continue
+
+        # expand the key.
+        n, k, e, c, r, q, m = dkey
+        #n, k, e, c, q, m = dkey
+        mkey = (n, k, e, c, r, q)
+        #mkey = (n, k, e, c, q)
+        skey = n, k, e, c, r, m        # remove reference ot repeat variable
+        #skey = n, k, e, c, m        # remove reference ot repeat variable and cell types
+
+        # skip till selected.
+        if n != args.n: continue
+        if k != args.k: continue
+        if e != args.e: continue
+        if c != args.c: continue
+        if m != args.m: continue
+
+        # load the true concentrations.
+        S_true = np.load('%s.npy' % master[mkey]['H'])
+        S_true = S_true[0:m,:]
+        C_true = np.load('%s.npy' % master[mkey]['C'])
+        
+        # load the predicted.
+        S_pred = np.load(results[dkey][method_name]['S'])
+        C_pred = np.load(results[dkey][method_name]['C'])
+               
+        # remap if its not DECONF
+        if method_name != "DECONF":
+
+            # remap to known order.
+            if r != -1:
+                C_pred, S_pred = _remap_missing(C_pred, S_pred, r, k)
+        else:
+            
+            # perform matching.
+            C_pred, S_pred = _match_pred(C_pred, S_pred, C_true, S_true)
+
+        # compute absolute difference.
+        s = S_true[:, r] - S_pred[:, r]
+        for i in range(m):
+            genet[i].append(s[i])
+    
+    # create stuff.
+    tmp = list()
+    for i in range(args.m):
+        tmp.append(genet[i])
+    
+    # create figure.
+    pos = range(args.m)
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    _violin_plot(ax, tmp, pos)
+
+    # finalize.
+    #plt.title("stuff")
+    ax.set_xticks(pos)
+    ax.set_xticklabels(b_lbls, rotation=90)
+    ax.set_ylabel('absolute difference')
+    #ax.set_ylim([0,300])
+    plt.savefig(args.fig_file)
+    
 ## low-level functions ##
 
 # helper for cleaning up axes by removing ticks, tick labels, frame, etc.

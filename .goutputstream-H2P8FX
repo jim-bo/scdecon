@@ -28,7 +28,7 @@ from scipy.stats import norm
 from scipy.stats import gmean
 from sklearn import feature_selection
 import sklearn
-from sklearn.metrics import roc_auc_score
+#from sklearn.metrics import roc_auc_score
 from sklearn.metrics import classification_report
 from sklearn.metrics import accuracy_score
 
@@ -1472,7 +1472,7 @@ def _bin_class_gen(nmixs, kcell, enois, ctype, rmode, qtrys, mgene, SAMPLES, ilu
 
 def pred_survey(args):
     ''' prediction survey '''
-    #'''
+
     # setup directory.
     sim_dir = os.path.abspath(args.sim_dir)
     sim_obj = '%s/sim.cpickle' % sim_dir
@@ -1507,8 +1507,8 @@ def pred_survey(args):
     ctype = np.array([1])
 
     ## these guys stay the same.
-    rmode = np.arange(0, 6, 1)
-    qtrys = np.arange(0, 10, 1)
+    rmode = np.arange(0, 3, 1)
+    qtrys = np.arange(0, 1, 1)
 
     # simulate the single-cells.
     SAMPLES, samp_y = sim.sample_1(10000)
@@ -1538,7 +1538,7 @@ def pred_survey(args):
     # run simulation at different errors.
     master = dict()
 
-    # create the master matrix. 
+    # create the master matrix.
     byid = dict()
     jobid = dict()
     y_true = dict()
@@ -1571,19 +1571,13 @@ def pred_survey(args):
         # store for results.
         jobs.append(jobj)
 
-
     # close pool and wait for results.
     pool.close()
     pool.join()
 
     # synchronize results.
-    bynoise = dict()
-    preds = dict()
+    bye = dict()
     for jobj in jobs:
-
-        # simplify stuff.
-        e = jobj['e']
-        truth = jobj['truth']
 
         # get results.
         S, C = jobj['C'].get()
@@ -1595,44 +1589,48 @@ def pred_survey(args):
 
         # compute residual.
         r = np.around(np.sqrt(np.sum(np.square((X - XP)))), 5)
-        rm = np.around(np.sqrt(np.sum(np.square((X - XM)))), 5)
 
-        # save the ratio to the truth.
-        if e not in bynoise:
-            bynoise[e] = {True:list(), False:list()}
-        
-        # add predction.
-        if e not in preds:
-            preds[e] = {"y":list(), "pred":list(), 'p':list(), 'r':list(), 'rm':list()}
-            
-        
-        preds[e]['y'].append(truth)
-        preds[e]['pred'].append((r/rm)>1)
-        preds[e]['p'].append((r/rm))
-        preds[e]['r'].append(r)
-        preds[e]['rm'].append(rm)
-        
-        bynoise[e][truth].append(r/rm)
-        
-    # sav eit.
-    save_pickle("preds.cpickle", preds)
-    save_pickle("bynoise.cpickle", bynoise)
-    sys.exit()
-    #'''
-       
-    # load predictions
-    preds = load_pickle("preds.cpickle")
-    
-            
-    for e in sorted(preds.keys()):
-        print e, accuracy_score(preds[e]['y'], preds[e]['pred']), roc_auc_score(preds[e]['y'], preds[e]['p'])
-            
-            
-    sys.exit()
+        # store it.
+        if jobid not in bye[e]:
+            bye[e][jobid] = dict()
+        bye[e][jobid][key] = r
+
     # loop over each error.
-    for e in bynoise:
-        print e, ' '.join([str(x) for x in bynoise[e][True]])
-        print e, ' '.join([str(x) for x in bynoise[e][False]])
+    for e in bye:
+
+        # cast truth.
+        y = np.array(y_true[e])
+
+        # run classifier.
+        preds = list()
+        for jobid in bye[e]:
+
+            # get datasets.
+            r_SC = bye[e][jobid]['SC']
+            r_C = bye[e][jobid]['C']
+
+            # if the difference is small make prediction.
+            p = abs(r_C - r_SC)
+            if p < 1.0:
+                x = False
+            else:
+                x = True
+
+            print y
+            print jobid
+            print r_SC, r_C, p, x, y[jobid]
+
+            # add it.
+            preds.append(x)
+
+        # cast to numpy array.
+        preds = np.array(preds)
+
+        # score it.
+        #print roc_auc_score(y, preds)
+        #print classification_report(y, preds)
+        print e, accuracy_score(y, preds)
+
 
 
 

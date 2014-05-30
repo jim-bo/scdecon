@@ -186,7 +186,7 @@ def _lmfit_sc(X, SM):
 
     for i in range(m):
         SU[i, -1] = params['s%i' % i].value
-    
+
     # compute the final model.
     np.dot(SU, CU, out=XUD)
     np.subtract(XUD, X, out=XUS)
@@ -226,7 +226,7 @@ def _lmfit_c(x, S):
         input:
             x = (m,)
             S = (m x k)
-        
+
         output:
             c = (k,)
     '''
@@ -256,7 +256,7 @@ def _lmfit_c(x, S):
         return None, "ZeroDivisionError", e
 
     # extract results.
-    c = np.array([params['c_%i' % l].value for l in range(k)])    
+    c = np.array([params['c_%i' % l].value for l in range(k)])
 
     # compute the final model.
     o = np.sqrt(np.sum(np.square(x - np.dot(S, c))))
@@ -270,16 +270,16 @@ def _obj_c(params, x, S):
     # simplify.
     m = x.shape[0]
     k = S.shape[1]
-    
+
     # build array.
     c = np.array([params['c_%i' % l].value for l in range(k)])
-    
+
     # compute dot product.
     x2 = np.dot(S, c)
-    
+
     # compute.
     return np.abs(x - x2)
-    
+
 ### middle functions ###
 
 def solve_SC(X, Z, y):
@@ -298,18 +298,18 @@ def solve_SC(X, Z, y):
 
     # create new S.
     S = np.zeros((m,k))
-    
+
     # copy known data.
     S[:,0:k-1] = SM[:,0:k-1]
 
     # copy new data.
     S[:,-1] = sp
-            
+
     # return it.
     return S, C
 
 
-def solve_C(X, Z, y, num_threads=1):
+def solve_C(X, Z, y, num_threads=1, avg_meth=False):
     """ solves using QP and multiprocessing """
 
     # create C.
@@ -319,7 +319,10 @@ def solve_C(X, Z, y, num_threads=1):
     C = np.zeros((k,n), dtype=np.float)
 
     # create S
-    S, t = avg_cat(y, np.transpose(Z))
+    if avg_meth == False:
+        S, t = avg_cat(y, np.transpose(Z))
+    else:
+        S = avg_cat_nozero(Z, y)
 
     # create list of jobs.
     jobs = list()
@@ -332,10 +335,10 @@ def solve_C(X, Z, y, num_threads=1):
 
             # call the program.
             c, o = _qp_solve_c(X[:,[j]], S)
-            
+
             # update stuff.
             C[:,j] = c
-            
+
     # return it.
     return S, C
 
@@ -389,20 +392,20 @@ def test_UCQP(args):
     m = 10
     k = 3
     X, S, SM, C_true = _debug_setup(n, m, k)
-    
+
     # solve each column.
     for j in range(n):
-        
+
         # solve.
         c1, o1 = _lmfit_c(X[:,j], S)
         c2, o2 = _qp_solve_c(X[:,[j]], S)
-    
+
         # score it.
         score1 = meanabs_vector(C_true[:,j], c1)
         score2 = meanabs_vector(C_true[:,j], c2)
-        
+
         print '%.5f %.5f %.5f %.5f' % (score1, o1, score2, o2)
-    
+
 
 def test_UCQPM(args):
     """ verify deconvolution using missing data """
@@ -412,16 +415,16 @@ def test_UCQPM(args):
     m = 5
     k = 3
     X, S, SM, C_true = _debug_setup(n, m, k)
-    
+
     # run the function.
     s, C_pred, o = _lmfit_sc(X, SM)
-    
+
     # score the concentrations.
     for j in range(n):
         score = meanabs_vector(C_true[:,j], C_pred[:,j])
-        
+
         print 'c_%i %.5f' % (j, score)
-    
+
     # score the signature.
     score = meanabs_vector(S[:,-1], s)
     print 's   %.5f %.5f' % (score, o)
