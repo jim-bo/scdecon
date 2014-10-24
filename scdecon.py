@@ -316,13 +316,18 @@ def solve_C(X, Z, y, num_threads=1, avg_meth=False):
     n = X.shape[1]
     m = X.shape[0]
     k = len(np.unique(y))
-    C = np.zeros((k,n), dtype=np.float)
 
     # create S
     if avg_meth == False:
         S, t = avg_cat(y, np.transpose(Z))
+    elif avg_meth == 99:
+        S = Z
+        k = S.shape[1]
     else:
         S = avg_cat_nozero(Z, y)
+
+    # create results.
+    C = np.zeros((k,n), dtype=np.float)
 
     # create list of jobs.
     jobs = list()
@@ -337,7 +342,7 @@ def solve_C(X, Z, y, num_threads=1, avg_meth=False):
             c, o = _qp_solve_c(X[:,[j]], S)
 
             # update stuff.
-            C[:,j] = c
+            C[:, j] = c
 
     # return it.
     return S, C

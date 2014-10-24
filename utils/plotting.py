@@ -28,8 +28,7 @@ from sklearn.decomposition import PCA
 # application.
 from utils.matops import *
 from utils.misc import *
-#from simulation import _sim_gen
-from simulation import _remap_missing, _match_pred
+import simulation
 
 ## high-level functions ##
 def pca_X_Z(X, Z, y, figure_path):
@@ -601,7 +600,7 @@ def plot_genes(args):
     features = np.where(clf.get_support() == True)[0]
 
     # simulate single-cells.
-    sim = SimSingleCell(SC, sc_lbls)
+    sim = simulation.SimSingleCell(SC, sc_lbls)
     TMP, we = sim.sample_1(1000)
 
     # loop over genes:
@@ -671,7 +670,7 @@ def plot_gene(args):
     c_lbls = np.load(args.c_lbls)
 
     # simulate single-cells.
-    sim = SimSingleCell(SC, sc_lbls, load=False)
+    sim = simulation.SimSingleCell(SC, sc_lbls, load=False)
     TMP, we = sim.sample_1(1000)
 
     # set gene name.
@@ -765,11 +764,11 @@ def plot_C(args):
 
             # remap to known order.
             if r != -1:
-                C_pred, S_pred = _remap_missing(C_pred, S_pred, r, k)
+                C_pred, S_pred = simulation._remap_missing(C_pred, S_pred, r, k)
         else:
             
             # perform matching.
-            C_pred, S_pred = _match_pred(C_pred, S_pred, C_true, S_true)
+            C_pred, S_pred = simulation._match_pred(C_pred, S_pred, C_true, S_true)
 
         # add to data.
         for j in range(n):
@@ -903,11 +902,11 @@ def plot_S(args):
 
             # remap to known order.
             if r != -1:
-                C_pred, S_pred = _remap_missing(C_pred, S_pred, r, k)
+                C_pred, S_pred = simulation._remap_missing(C_pred, S_pred, r, k)
         else:
             
             # perform matching.
-            C_pred, S_pred = _match_pred(C_pred, S_pred, C_true, S_true)
+            C_pred, S_pred = simulation._match_pred(C_pred, S_pred, C_true, S_true)
 
         # compute absolute difference.
         s = S_true[:, r] - S_pred[:, r]
